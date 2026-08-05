@@ -2,7 +2,7 @@
 # One image means one thing to build, one thing to scan, one thing to keep in
 # sync. On a 4-core N100 you do not want to build five.
 
-FROM python:3.12-slim AS base
+FROM python:3.14-slim AS base
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
