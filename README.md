@@ -474,8 +474,12 @@ stack actually runs:
 docker run -d --name qdtest -p 55433:5432 -e POSTGRES_USER=qd -e POSTGRES_PASSWORD=qdtest -e POSTGRES_DB=quantdesk timescale/timescaledb:2.17.2-pg16
 ```
 
+The interpreter is read from `docker/Dockerfile` rather than written out here,
+so "matches how the stack actually runs" stays true after a base-image bump —
+this line used to say `python:3.12-slim` while the containers had moved to 3.14.
+
 ```bash
-docker run --rm --network host -v /tmp/qdsrc:/src -w /src -e QD_TEST_DSN=postgresql://qd:qdtest@127.0.0.1:55433/quantdesk python:3.12-slim sh -c "pip install -q asyncpg pytest pytest-asyncio numpy && python -m pytest tests/test_store.py -q -p no:cacheprovider"
+PY="$(grep -oP '^FROM python:\K[0-9]+\.[0-9]+' /tmp/qdsrc/docker/Dockerfile)" && docker run --rm --network host -v /tmp/qdsrc:/src -w /src -e QD_TEST_DSN=postgresql://qd:qdtest@127.0.0.1:55433/quantdesk "python:$PY-slim" sh -c "pip install -q asyncpg pytest pytest-asyncio numpy && python -m pytest tests/test_store.py -q -p no:cacheprovider"
 ```
 
 **Recreate the container to pick up a changed `schema.sql`.** The tests isolate

@@ -11,7 +11,9 @@ open an issue first and let's talk about it before you write code.
 
 ## Setup
 
-Requires Python 3.12+.
+Requires Python 3.12+. CI runs the suite on every minor from that floor up to
+the version the containers ship (`docker/Dockerfile`, currently 3.14), so a
+patch that only works on the newest interpreter will fail on the oldest leg.
 
 ```bash
 python -m venv .venv

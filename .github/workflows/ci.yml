@@ -15,9 +15,32 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
+  # Every Python version in this repository is DERIVED, never written here as a
+  # literal. Two files declare one:
+  #
+  #   pyproject.toml   requires-python = ">=3.12"   the floor we promise
+  #   docker/Dockerfile FROM python:3.14-slim       the interpreter that ships
+  #
+  # Both claims are load-bearing and each used to be checked by nothing.
+  # A hardcoded '3.12' here once drifted from the Dockerfile the moment
+  # Dependabot bumped the image to 3.14: CI went green because `test` ran the
+  # suite on 3.12 while only `build` ever saw 3.14. A passing tick meant "the
+  # image builds", not "the code works on the new interpreter" — on the
+  # container that places orders.
+  #
+  # Deriving the Dockerfile version fixed that half. This job fixes the other:
+  # `requires-python = ">=3.12"` promised 3.12 and 3.13 as well, and nothing
+  # ever ran a single test on either. The matrix is the whole inclusive range
+  # from the floor to the shipped version, so both ends of the promise — and
+  # everything between — are tested. Widen or raise either claim and the matrix
+  # follows automatically.
+  versions:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.derive.outputs.matrix }}
+      floor: ${{ steps.derive.outputs.floor }}
+      shipped: ${{ steps.derive.outputs.shipped }}
     steps:
       # Actions are pinned to a commit SHA, not a tag. A tag is mutable: whoever
       # controls the action's repo can repoint v4 at new code and it runs here
@@ -27,47 +50,119 @@ jobs:
         with:
           persist-credentials: false
 
-      # The version comes from docker/Dockerfile, not a literal here.
-      #
-      # It used to be a hardcoded '3.12' while the Dockerfile was its own source
-      # of truth, so the two could drift silently — and immediately did. The
-      # first Dependabot PR bumped the image to python:3.14-slim and CI went
-      # green, because the `test` job had run the 682 tests on 3.12 while only
-      # the `build` job saw 3.14. A passing tick meant "the image builds", not
-      # "the code works on the new interpreter" — on the container that places
-      # orders. Deriving it means a base-image bump is actually tested.
-      - name: Resolve the Python version from the Dockerfile
-        id: pyver
+      - name: Derive the interpreter matrix from pyproject and the Dockerfile
+        id: derive
         run: |
-          v="$(grep -oP 'FROM python:\K[0-9]+\.[0-9]+' docker/Dockerfile | head -1)"
-          # An empty value would be handed to setup-python, which then picks
-          # something of its own choosing — reintroducing the drift silently.
-          if [ -z "$v" ]; then
+          # `|| true` is load-bearing. This shell runs with -e, so a grep that
+          # matches nothing would abort the step right here and the explicit
+          # diagnostics below would never print — turning a clear "I could not
+          # read your floor" into a bare non-zero exit.
+          floor="$(grep -oP '^requires-python\s*=\s*">=\s*\K[0-9]+\.[0-9]+' pyproject.toml | head -1 || true)"
+          shipped="$(grep -oP '^FROM python:\K[0-9]+\.[0-9]+' docker/Dockerfile | head -1 || true)"
+
+          # An empty value handed to setup-python makes it pick something of its
+          # own choosing, which is exactly the silent drift this job exists to
+          # stop. Fail loudly instead.
+          if [ -z "$floor" ]; then
+            echo "::error::could not read requires-python from pyproject.toml."
+            echo "::error::Expected a line like 'requires-python = \">=3.12\"'."
+            exit 1
+          fi
+          if [ -z "$shipped" ]; then
             echo "::error::could not read a Python version from docker/Dockerfile."
             echo "::error::Expected a line like 'FROM python:3.12-slim AS base'."
             exit 1
           fi
-          echo "resolved Python $v from docker/Dockerfile"
-          echo "v=$v" >> "$GITHUB_OUTPUT"
+
+          fmaj="${floor%%.*}"; fmin="${floor##*.}"
+          smaj="${shipped%%.*}"; smin="${shipped##*.}"
+
+          # A major bump is not something to paper over by enumerating a range
+          # across it; it needs a human to decide what is actually supported.
+          if [ "$fmaj" != "$smaj" ]; then
+            echo "::error::pyproject floor $floor and image $shipped differ in major version."
+            exit 1
+          fi
+          # The image shipping an interpreter older than the declared floor means
+          # production runs on a version the project says it does not support.
+          if [ "$smin" -lt "$fmin" ]; then
+            echo "::error::the image ships $shipped, below the declared floor $floor."
+            echo "::error::Raise the Dockerfile or lower requires-python."
+            exit 1
+          fi
+
+          versions=""
+          for (( m=fmin; m<=smin; m++ )); do
+            versions="${versions:+$versions,}\"$fmaj.$m\""
+          done
+          echo "floor $floor, image ships $shipped -> testing [$versions]"
+          echo "matrix=[$versions]" >> "$GITHUB_OUTPUT"
+          echo "floor=$floor" >> "$GITHUB_OUTPUT"
+          echo "shipped=$shipped" >> "$GITHUB_OUTPUT"
+
+  # Lint and types are interpreter-independent: ruff's `target-version` and
+  # mypy's `python_version` are pinned in pyproject, so running them once on
+  # every matrix leg would produce N identical results. They run once, here.
+  static:
+    needs: versions
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Both tools check against the FLOOR, not the shipped version, and that
+      # direction matters: targeting 3.14 would happily accept 3.14-only syntax
+      # and break the 3.12 we promise. Targeting the floor catches it.
+      #
+      # These are two more literals that nothing checked. They agreed with
+      # requires-python by luck, not by construction.
+      - name: Confirm ruff and mypy target the declared floor
+        run: |
+          floor="${{ needs.versions.outputs.floor }}"
+          ruff_want="py${floor/./}"
+          ruff_have="$(grep -oP '^target-version\s*=\s*"\K[^"]+' pyproject.toml | head -1 || true)"
+          mypy_have="$(grep -oP '^python_version\s*=\s*"\K[^"]+' pyproject.toml | head -1 || true)"
+          echo "floor $floor | ruff target-version $ruff_have (want $ruff_want) | mypy python_version $mypy_have (want $floor)"
+          rc=0
+          [ "$ruff_have" = "$ruff_want" ] || {
+            echo "::error::ruff target-version is '$ruff_have' but requires-python floor is $floor (want '$ruff_want')"
+            rc=1
+          }
+          [ "$mypy_have" = "$floor" ] || {
+            echo "::error::mypy python_version is '$mypy_have' but requires-python floor is $floor"
+            rc=1
+          }
+          exit $rc
+
+      # ARCHITECTURE.md and CONTRIBUTING.md each name the shipped interpreter in
+      # prose. Prose drifts exactly like code does — ARCHITECTURE.md said "Python
+      # 3.12" for the whole life of the 3.14 image. Both phrasings are pinned to
+      # the Dockerfile here so the next base-image bump fails loudly with the
+      # file to edit, instead of quietly making the documentation wrong.
+      - name: Confirm the docs name the shipped interpreter
+        run: |
+          shipped="${{ needs.versions.outputs.shipped }}"
+          rc=0
+          check() {  # $1 file, $2 required literal
+            if grep -qF "$2" "$1"; then
+              echo "ok: $1 contains '$2'"
+            else
+              echo "::error file=$1::expected '$2' — the image ships $shipped and this file disagrees"
+              rc=1
+            fi
+          }
+          check ARCHITECTURE.md "(the containers ship $shipped)"
+          check CONTRIBUTING.md "currently $shipped"
+          exit $rc
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: ${{ steps.pyver.outputs.v }}
+          python-version: ${{ needs.versions.outputs.floor }}
           cache: pip
-
-      # Belt and braces: prove the interpreter actually running the suite is the
-      # one the image ships. A mismatch here means the resolution above silently
-      # did not take effect.
-      - name: Confirm the interpreter matches the image
-        run: |
-          have="$(python -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
-          want="${{ steps.pyver.outputs.v }}"
-          echo "running on $have, image ships $want"
-          [ "$have" = "$want" ] || {
-            echo "::error::tests would run on $have but the image ships $want"
-            exit 1
-          }
 
       - name: Install
         run: |
@@ -79,6 +174,47 @@ jobs:
 
       - name: Types
         run: mypy ct
+
+  test:
+    needs: versions
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      # Which versions fail is the whole signal. Cancelling the siblings on the
+      # first red would hide whether it is one interpreter or all of them.
+      fail-fast: false
+      matrix:
+        python: ${{ fromJSON(needs.versions.outputs.matrix) }}
+    name: test (py${{ matrix.python }})
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      # Belt and braces: prove the interpreter actually running the suite is the
+      # one this leg claims. A mismatch means setup-python silently substituted
+      # something else, which would make a green leg meaningless.
+      - name: Confirm the interpreter matches this leg
+        run: |
+          have="$(python -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+          want="${{ matrix.python }}"
+          echo "running on $have, leg wants $want"
+          [ "$have" = "$want" ] || {
+            echo "::error::tests would run on $have but this leg is py$want"
+            exit 1
+          }
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
 
       # The suite is offline by design: no database, no exchange, no network.
       # If this step ever needs a service container, that is a smell worth
