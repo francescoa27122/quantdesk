@@ -1,0 +1,28 @@
+version: 2
+updates:
+  # Python. Grouped so a routine week is one PR, not fifteen — but security
+  # updates are deliberately left ungrouped so they arrive on their own and
+  # get looked at on their own.
+  - package-ecosystem: pip
+    directory: "/"
+    schedule: { interval: weekly, day: monday }
+    open-pull-requests-limit: 5
+    groups:
+      dev-dependencies:
+        patterns: ["pytest*", "ruff", "mypy", "hypothesis"]
+      runtime-minor-and-patch:
+        update-types: ["minor", "patch"]
+    ignore:
+      # ccxt ships several releases a week. Minor/patch churn is noise on a
+      # dependency whose breaking changes are what actually matter.
+      - dependency-name: ccxt
+        update-types: ["version-update:semver-patch"]
+
+  - package-ecosystem: docker
+    directory: "/docker"
+    schedule: { interval: weekly, day: monday }
+    open-pull-requests-limit: 3
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule: { interval: weekly, day: monday }

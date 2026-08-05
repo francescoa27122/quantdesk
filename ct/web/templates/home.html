@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}Home · QuantDesk{% endblock %}
+
+{% block content %}
+
+{# ── the one-glance verdict ─────────────────────────────────────────── #}
+<section class="card plain-verdict plain-verdict--{{ plain.verdict.level }}">
+  <div class="card-body">
+    <div class="plain-light" aria-hidden="true"></div>
+    <div>
+      <h1 class="plain-headline">{{ plain.verdict.headline }}</h1>
+      <p class="plain-lede">{{ plain.verdict.detail }}</p>
+    </div>
+  </div>
+</section>
+
+{% if plain.attention %}
+<div class="alert alert--danger" role="alert">
+  <b>Needs your attention:</b>
+  {{ plain.attention[0].detail or plain.attention[0].code }}
+  <a class="alert-link" href="/risk">See details</a>
+</div>
+{% endif %}
+
+<div class="grid plain-grid">
+
+  <section class="card">
+    <header class="card-head"><h2 class="card-title">What it's doing</h2></header>
+    <div class="card-body plain-prose">
+      <p>{{ plain.doing }}</p>
+      <p>{{ plain.activity }}</p>
+    </div>
+  </section>
+
+  <section class="card">
+    <header class="card-head"><h2 class="card-title">The money</h2></header>
+    <div class="card-body plain-prose">
+      <p>{{ plain.money }}</p>
+      <p class="plain-more"><a href="/overview">See the full numbers →</a></p>
+    </div>
+  </section>
+
+  <section class="card">
+    <header class="card-head"><h2 class="card-title">What happens next</h2></header>
+    <div class="card-body plain-prose">
+      <p>{{ plain.next }}</p>
+      {% if plain.paper_days %}
+      {# SVG presentation attributes, NOT a style= attribute: this page's CSP
+         (style-src 'self') strips inline styles — the same trap that once
+         broke the rejection histogram. #}
+      <svg class="plain-progress" viewBox="0 0 100 6" preserveAspectRatio="none"
+           role="img" aria-label="Practice day {{ plain.paper_days }} of {{ plain.paper_target_days }}">
+        <rect class="plain-progress-track" x="0" y="0" width="100" height="6" rx="3"/>
+        <rect class="plain-progress-bar" x="0" y="0" height="6" rx="3"
+              width="{{ [100.0, (100.0 * plain.paper_days / plain.paper_target_days)] | min | round(1) }}"/>
+      </svg>
+      <p class="plain-progress-label">Practice day {{ plain.paper_days }} of {{ plain.paper_target_days }}</p>
+      {% endif %}
+    </div>
+  </section>
+
+  <section class="card">
+    <header class="card-head"><h2 class="card-title">Do I need to do anything?</h2></header>
+    <div class="card-body plain-prose">
+      {% if plain.attention %}
+        <p>Yes — {{ plain.attention|length }} item{{ 's' if plain.attention|length != 1 }} above need{{ '' if plain.attention|length != 1 else 's' }} a look.</p>
+      {% else %}
+        <p>No. Nothing needs your attention right now.</p>
+      {% endif %}
+      {% if plain.fyi %}
+        <p class="plain-fyi">For the record (no action needed):
+        {% for e in plain.fyi %}{{ e.code }}{{ ", " if not loop.last }}{% endfor %}
+        — <a href="/risk">acknowledge on the Risk page</a>.</p>
+      {% endif %}
+    </div>
+  </section>
+
+  <section class="card plain-glossary">
+    <header class="card-head">
+      <h2 class="card-title">The five words that matter here</h2>
+      <p class="card-sub">Everything else on this dashboard is detail on top of these.</p>
+    </header>
+    <div class="card-body plain-prose">
+      <dl>
+        {% for term, meaning in plain.glossary %}
+        <dt>{{ term }}</dt><dd>{{ meaning }}</dd>
+        {% endfor %}
+      </dl>
+    </div>
+  </section>
+
+</div>
+{% endblock %}

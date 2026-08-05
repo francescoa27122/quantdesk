@@ -1,0 +1,32 @@
+name: Feature request
+description: Propose a change in behaviour
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please read CONTRIBUTING.md first — this project declines most
+        unsolicited features, and always declines anything that widens the
+        money boundary. Opening this before writing code is the right order.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What is hard or impossible today? Describe the need, not the solution.
+    validations: { required: true }
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+    validations: { required: true }
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you considered instead, and why it is worse
+  - type: checkboxes
+    id: boundary
+    attributes:
+      label: Money boundary
+      options:
+        - label: This does not create any path to an arming whose ancestry does not terminate in a human tap
+          required: true

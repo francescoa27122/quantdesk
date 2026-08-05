@@ -1,0 +1,26 @@
+{% import "macros.html" as m %}
+{% if signals %}
+<ul class="feed">
+  {% for s in signals %}
+  <li class="feed-row {{ 'is-accepted' if s.accepted else 'is-rejected' }}">
+    <span class="feed-mark" aria-hidden="true"></span>
+    <span class="feed-main">
+      <b>{{ s.strategy }}</b>
+      <span class="feed-sym">{{ s.symbol }}</span>
+      <span class="dir dir--{{ 'long' if s.direction > 0 else ('short' if s.direction < 0 else 'flat') }}">
+        {{ 'LONG' if s.direction > 0 else ('SHORT' if s.direction < 0 else 'EXIT') }}
+      </span>
+      {% if s.accepted %}
+        <span class="feed-note">sized {{ s.sized_qty|qty }}</span>
+      {% else %}
+        <span class="feed-note feed-note--reject" title="{{ s.reject_detail or '' }}">{{ s.reject_code }}</span>
+      {% endif %}
+    </span>
+    <span class="feed-time dim">{{ m.when(s.ts) }}</span>
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+  {{ m.empty('No signals recorded',
+             'Every signal is stored — including rejections — so "the strategy is bad" can be told apart from "risk is strangling it".') }}
+{% endif %}

@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}Activity · QuantDesk{% endblock %}
+
+{% block content %}
+<div class="pagehead">
+  <div>
+    <h1>Activity</h1>
+    <p class="pagehead-sub">The event log is the authority — not a subscriber queue.
+      Every drop is announced, so a gap is never silent.</p>
+  </div>
+  <div class="pagehead-actions">
+    <label class="switch">
+      <input type="checkbox" id="follow" checked>
+      <span>Follow live</span>
+    </label>
+  </div>
+</div>
+
+<form class="filters" method="get" action="/activity">
+  <label class="field">
+    <span>Severity</span>
+    <select name="severity">
+      <option value="">all</option>
+      {% for s in ['critical', 'warning', 'info', 'debug'] %}
+        <option value="{{ s }}"{% if filter_severity == s %} selected{% endif %}>{{ s }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label class="field">
+    <span>Group</span>
+    <select name="kind">
+      <option value="">all</option>
+      {% for k in ['system', 'market', 'strategy', 'risk', 'execution', 'portfolio'] %}
+        <option value="{{ k }}"{% if filter_kind == k %} selected{% endif %}>{{ k }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <button class="btn btn--sm" type="submit">Apply</button>
+  {% if filter_severity or filter_kind %}<a class="btn btn--ghost btn--sm" href="/activity">Clear</a>{% endif %}
+</form>
+
+<div class="grid grid--two">
+
+  <section class="card card--wide">
+    <header class="card-head">
+      <div><h2 class="card-title">Events</h2>
+        <p class="card-sub">Newest first · new ones arrive over SSE and appear at the top</p></div>
+      <span class="card-meta num" id="event-count">{{ events|length }}</span>
+    </header>
+    <div class="card-body card-body--flush">
+      {% if events %}
+      <table class="tbl tbl--hover tbl--dense" id="event-table">
+        <thead><tr><th class="r">Seq</th><th>When</th><th>Event</th><th>Source</th>
+          <th>Detail</th><th></th></tr></thead>
+        <tbody id="event-rows">
+        {% for e in events %}
+          <tr class="{{ e.severity|severity_class }}">
+            <td class="r num dim">{{ e.seq }}</td>
+            <td class="dim">{{ m.when(e.ts) }}</td>
+            <td><b>{{ e.type|event_label }}</b><span class="tl-group">{{ e.type|event_group }}</span></td>
+            <td class="dim">{{ e.source }}</td>
+            <td class="ev-payload num">{{ e.payload }}</td>
+            <td class="r">{% if e.correlation_id %}<a class="cell-link" href="/trades/{{ e.correlation_id }}">chain →</a>{% endif %}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+        {{ m.empty('No events recorded',
+                   'The bus writes every state transition here. An empty log means nothing has run, not that logging is off.') }}
+      {% endif %}
+    </div>
+  </section>
+
+  {% call m.card('Audit log', 'Append-only: every control action and every sign-in, with actor') %}
+    {% if audit %}
+    <table class="tbl tbl--dense">
+      <thead><tr><th>When</th><th>Actor</th><th>Action</th><th>Target</th></tr></thead>
+      <tbody>
+      {% for a in audit %}
+        <tr>
+          <td class="dim">{{ m.when(a.ts) }}</td>
+          <td class="num">{{ a.actor }}</td>
+          <td><code>{{ a.action }}</code></td>
+          <td class="dim">{{ a.target or '—' }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+      {{ m.empty('Nothing audited yet') }}
+    {% endif %}
+  {% endcall %}
+
+  {% call m.card('Control commands', 'Intent this dashboard queued for the engine') %}
+    {% if commands %}
+    <table class="tbl tbl--dense">
+      <thead><tr><th>When</th><th>Command</th><th>By</th><th>Applied</th></tr></thead>
+      <tbody>
+      {% for c in commands %}
+        <tr>
+          <td class="dim">{{ m.when(c.ts) }}</td>
+          <td><code>{{ c.command }}</code></td>
+          <td class="dim">{{ c.requested_by }}</td>
+          <td>{% if c.applied_at %}{{ m.badge(c.result or 'applied', 'ok') }}
+              {% else %}{{ m.badge('pending', 'warn') }}{% endif %}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+      {{ m.empty('No commands issued') }}
+    {% endif %}
+  {% endcall %}
+
+</div>
+{% endblock %}

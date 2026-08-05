@@ -1,0 +1,20 @@
+Alembic migrations for QuantDesk.
+
+  qd migrate            apply everything pending (alembic upgrade head)
+  qd migrate --status   current revision vs head, applies nothing
+  qd migrate --sql      print the DDL instead of running it
+
+Writing one:
+
+  alembic revision -m "add whatever"
+
+There is no --autogenerate. See the reasoning in env.py: the schema is
+hand-written SQL with Timescale hypertables, and autogenerate proposes
+dropping the chunk tables Timescale manages. Write the SQL by hand, and
+write a real downgrade() — "schema changes on a live trading DB need to be
+reversible" (ARCHITECTURE.md §2) is the whole reason Alembic is here.
+
+db/schema.sql is the 0001 baseline and is applied by Postgres on first boot
+via /docker-entrypoint-initdb.d. Migrations move forward FROM it; do not
+edit schema.sql to make a schema change, or a fresh install and an upgraded
+one will disagree.

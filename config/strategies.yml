@@ -1,0 +1,173 @@
+# Strategy parameters — the versioned research record.
+#
+# This file is the answer to "why is the entry lookback 20 and not 55?". Every
+# number here is a claim that some backtest justified, so it lives in version
+# control next to the code it parameterises, where `git log -p config/` shows
+# who changed it and when. Parameters in environment variables are
+# unattributable, which is how a live system ends up running numbers nobody can
+# explain.
+#
+# Read by ct/config.py. Mounted read-only into qd-engine, qd-collector, qd-web
+# and qd-worker at /app/config.
+#
+# ── the rules ────────────────────────────────────────────────────────────
+#
+# 1.  BUMP `version` ON EVERY CONTENT CHANGE. It is what makes a backtest
+#     record traceable to a specific config revision. The hash catches the
+#     change either way; the version is what a human reads.
+#
+# 2.  Only list a parameter you have deliberately chosen. Anything omitted
+#     falls back to the strategy's own DEFAULTS at construction time, and is
+#     deliberately NOT folded into the hash — otherwise editing a default in
+#     Python would silently invalidate every historical backtest record.
+#
+# 3.  `enabled:` here is the config's opinion, not the live switch. The
+#     database `strategies.enabled` column stays authoritative at run time, so
+#     that pausing a strategy from the dashboard survives the next redeploy.
+#     Use `qd enable-strategy <name>` to actually turn one on.
+#
+# 4.  Every strategy in this repository is 🟡 implemented but UNPROVEN. None
+#     has passed the promotion gate (ARCHITECTURE.md §8.3). The parameters
+#     below are the published defaults, not optimised values — treat them as a
+#     starting point for your own walk-forward, not as a recommendation.
+#
+# 5.  Fees are the binding constraint. Kraken spot at the $0 tier is 0.40%
+#     taker, so 0.80% round-trip. Before widening any parameter that increases
+#     trade frequency, check what it does to net return, not gross.
+
+version: 1
+
+strategies:
+
+  # ── breakout ───────────────────────────────────────────────────────────
+
+  donchian_breakout:
+    enabled: true
+    symbols: [BTC/USD, ETH/USD]
+    timeframe: 4h
+    weight: 1.0
+    params:
+      entry_period: 20
+      exit_period: 10
+      atr_period: 14
+      stop_atr_mult: 2.0
+      trail_atr_mult: 3.0
+      target_atr_mult: 8.0
+      # Volume confirmation. A breakout on thin volume is usually noise, and
+      # noise is expensive at a 0.80% round-trip.
+      vol_period: 20
+      vol_mult: 1.2
+      # Only take longs above the 200 EMA. Crypto downtrends are fast and
+      # correlated; a trend-following long in one is where the losses live.
+      regime_ema: 200
+      long_only: true
+
+  atr_squeeze:
+    enabled: false
+    symbols: [BTC/USD]
+    timeframe: 4h
+    params:
+      bb_period: 20
+      bb_std: 2.0
+      kc_period: 20
+      kc_mult: 1.5
+      # Require a genuine compression before believing the expansion.
+      min_squeeze_bars: 6
+      atr_period: 14
+      stop_atr_mult: 2.0
+      trail_atr_mult: 2.5
+      target_atr_mult: 5.0
+      vol_period: 20
+      vol_mult: 1.2
+      long_only: true
+
+  # ── trend ──────────────────────────────────────────────────────────────
+
+  ema_cross:
+    enabled: false
+    symbols: [BTC/USD]
+    timeframe: 4h
+    params:
+      fast: 20
+      slow: 50
+      # An EMA cross in a range is a fee generator. ADX is the range filter.
+      adx_period: 14
+      adx_min: 25.0
+      atr_period: 14
+      stop_atr_mult: 2.5
+      trail_atr_mult: 3.0
+      target_atr_mult: 6.0
+      long_only: true
+
+  supertrend:
+    enabled: false
+    symbols: [BTC/USD]
+    timeframe: 4h
+    params:
+      st_period: 10
+      st_mult: 3.0
+      regime_ema: 200
+      atr_period: 14
+      stop_atr_mult: 2.5
+      trail_atr_mult: 3.0
+      target_atr_mult: 6.0
+      long_only: true
+
+  macd_momentum:
+    enabled: false
+    symbols: [BTC/USD]
+    timeframe: 4h
+    params:
+      fast: 12
+      slow: 26
+      signal: 9
+      roc_period: 12
+      roc_min: 0.0
+      atr_period: 14
+      stop_atr_mult: 2.0
+      trail_atr_mult: 2.5
+      target_atr_mult: 4.0
+      long_only: true
+
+  # ── reversion ──────────────────────────────────────────────────────────
+  # Mean reversion and trend want opposite regimes. The risk engine's regime
+  # gate (ct/risk/engine.py §6) reads `family` and will refuse the wrong one,
+  # so enabling these alongside the trend strategies is safe — but sizing them
+  # against each other has not been researched. Leave off until it has.
+
+  bollinger_reversion:
+    enabled: false
+    symbols: [BTC/USD]
+    timeframe: 4h
+    params:
+      period: 20
+      num_std: 2.0
+      adx_period: 14
+      adx_max: 20.0
+      rsi_period: 14
+      rsi_max: 35.0
+      atr_period: 14
+      stop_atr_mult: 2.0
+      # Do not take a reversion trade whose target is inside the noise.
+      min_target_atr: 1.5
+      regime_ema: 200
+      require_above_regime: true
+      long_only: true
+
+  zscore_reversion:
+    enabled: false
+    symbols: [BTC/USD]
+    timeframe: 4h
+    params:
+      period: 30
+      entry_z: 2.0
+      exit_z: 0.5
+      # Beyond this, assume the distribution changed rather than that the move
+      # is extreme. A 6-sigma move in crypto is news, not a trade.
+      max_z: 4.0
+      adx_period: 14
+      adx_max: 20.0
+      atr_period: 14
+      stop_atr_mult: 2.5
+      min_target_atr: 1.5
+      long_only: true

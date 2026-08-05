@@ -1,0 +1,47 @@
+# Everything here is sent to the Docker daemon as build context before a single
+# instruction runs. Without this file the context was 282 MB, of which 277 MB
+# was `.venv` — copied over the wire on every build, on a NAS that has to do
+# that build itself. The Dockerfile only ever COPYs ct/, db/, migrations/,
+# config/, alembic.ini and pyproject.toml, so none of it was reachable anyway.
+
+# Local virtualenv and caches
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+
+# Runtime state, none of which belongs in an image
+data/
+logs/
+state/
+backups/
+reports/
+models/
+
+# Secrets. These are mounted as Docker secrets at run time and must never be
+# baked into a layer — an image layer is readable by anyone who can pull it.
+secrets/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Version control and editor noise
+.git/
+.gitignore
+.gitattributes
+.github/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Docs are not needed to run the engine. ARCHITECTURE.md alone is 61 KB and
+# changes often, which would bust the cache layer on every edit.
+*.md
+!README.md

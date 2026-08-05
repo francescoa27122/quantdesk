@@ -1,0 +1,9 @@
+{% import "macros.html" as m %}
+<div class="chart-wrap">
+  {{ charts.equity_chart(series)|safe }}
+  <div class="chart-legend">
+    <span class="lg"><i class="lg-dot lg-dot--eq"></i>equity</span>
+    <span class="lg"><i class="lg-dot lg-dot--dd"></i>drawdown</span>
+    <span class="lg lg--right num">{{ series|length }} points</span>
+  </div>
+</div>

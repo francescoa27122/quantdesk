@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}Strategies · QuantDesk{% endblock %}
+
+{% block content %}
+<div class="pagehead">
+  <div>
+    <h1>Strategies</h1>
+    <p class="pagehead-sub">No strategy has earned live capital. That is the correct
+      status for anything that has not completed the promotion gate.</p>
+  </div>
+</div>
+
+<div class="grid grid--two">
+
+  <section class="card card--wide">
+    <header class="card-head">
+      <div><h2 class="card-title">Activity</h2>
+        <p class="card-sub">Signals, what risk let through, and what actually filled</p></div>
+    </header>
+    <div class="card-body card-body--flush">
+      {% if strategies %}
+      <table class="tbl tbl--hover">
+        <thead><tr>
+          <th>Strategy</th><th></th><th class="r">Signals</th><th class="r">Accepted</th>
+          <th class="r">Fills</th><th class="r">Maker</th><th class="r">Fees</th>
+          <th class="r">Realised</th><th class="r">Books</th><th class="r">Last signal</th>
+        </tr></thead>
+        <tbody>
+        {% for s in strategies %}
+          <tr>
+            <td><b>{{ s.strategy }}</b></td>
+            <td>{% if s.strategy in engine.paused_strategies %}{{ m.badge('paused', 'warn', 'Quarantined or loss-breaker paused') }}{% endif %}</td>
+            <td class="r num">{{ s.signals|compact }}</td>
+            <td class="r num">{{ s.accepted|compact }}{% if s.signals %}<i class="dim">{{ (s.accepted / s.signals)|pct(0) }}</i>{% endif %}</td>
+            <td class="r num">{{ s.fills|compact }}</td>
+            <td class="r num">{% if s.maker_ratio is none %}<span class="dim">—</span>{% else %}{{ s.maker_ratio|float|pct(0) }}{% endif %}</td>
+            <td class="r num">{{ s.fees|money }}</td>
+            <td class="r num tone-{{ s.realized|tone }}">{{ s.realized|signed }}</td>
+            <td class="r num">{{ s.open_books }}</td>
+            <td class="r dim">{{ m.when(s.last_signal) if s.last_signal else '—' }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      <p class="tbl-note">Built from <code>signals</code>, <code>fills</code> and
+      <code>positions</code>. The <code>strategies</code> table has no writer, so the
+      truthful answer to "what is running" is "what has produced rows" — the engine's
+      roster comes from <code>QD_STRATEGIES</code> at boot.</p>
+      {% else %}
+        {{ m.empty('Nothing has traded or signalled yet',
+                   'Set QD_STRATEGIES and start qd-engine; rows appear on the first evaluated bar.') }}
+      {% endif %}
+    </div>
+  </section>
+
+  {% call m.card('Promotion gate', 'Paper → live. All six conditions, or no live capital.') %}
+    {% if promotion %}
+    <table class="tbl">
+      <thead><tr><th>Strategy</th><th>Passed</th><th class="r">Days</th>
+        <th class="r">Trades</th><th class="r">Sharpe</th><th>Failures</th></tr></thead>
+      <tbody>
+      {% for p in promotion %}
+        <tr>
+          <td>{{ p.strategy }}</td>
+          <td>{{ m.badge('passed' if p.passed else 'blocked', 'ok' if p.passed else 'danger') }}</td>
+          <td class="r num">{{ p.paper_days }}</td>
+          <td class="r num">{{ p.paper_trades }}</td>
+          <td class="r num">{{ p.paper_sharpe|money }}</td>
+          <td class="dim">{{ p.failures|join(', ') or '—' }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+      {{ m.empty('Never evaluated',
+                 'promotion_status is empty. The nightly evaluator that fills it is Phase 5 and is not built — so this is "not measured", not "failed". Arming today therefore requires --force, which is permanently audited.') }}
+    {% endif %}
+  {% endcall %}
+
+  {% call m.card('Rejections', 'Last 30 days, by reason') %}
+    {% if rejections %}
+      {{ charts.hbars(rejection_bars)|safe }}
+      <p class="note">Without the rejected signals you cannot tell
+      <em>the strategy is bad</em> from <em>risk is strangling it</em>. That is why
+      they are stored.</p>
+    {% else %}
+      {{ m.empty('Nothing rejected') }}
+    {% endif %}
+  {% endcall %}
+
+  <section class="card card--wide">
+    <header class="card-head">
+      <div><h2 class="card-title">Recent signals</h2>
+        <p class="card-sub">Accepted and refused, newest first</p></div>
+    </header>
+    <div class="card-body card-body--flush">
+      {% if signals %}
+      <table class="tbl tbl--hover tbl--dense">
+        <thead><tr><th>When</th><th>Strategy</th><th>Symbol</th><th>Direction</th>
+          <th class="r">Strength</th><th class="r">Ref price</th><th class="r">Sized</th><th>Outcome</th></tr></thead>
+        <tbody>
+        {% for s in signals %}
+          <tr>
+            <td class="dim">{{ m.when(s.ts) }}</td>
+            <td>{{ s.strategy }}</td>
+            <td class="num">{{ s.symbol }}</td>
+            <td><span class="dir dir--{{ 'long' if s.direction > 0 else ('short' if s.direction < 0 else 'flat') }}">
+              {{ 'LONG' if s.direction > 0 else ('SHORT' if s.direction < 0 else 'EXIT') }}</span></td>
+            <td class="r num">{{ s.strength|money }}</td>
+            <td class="r num">{{ s.ref_price|money }}</td>
+            <td class="r num">{{ s.sized_qty|qty if s.sized_qty else '—' }}</td>
+            <td>{% if s.accepted %}{{ m.badge('accepted', 'ok') }}
+                {% else %}{{ m.badge(s.reject_code or 'rejected', 'warn', s.reject_detail or '') }}{% endif %}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+        {{ m.empty('No signals recorded') }}
+      {% endif %}
+    </div>
+  </section>
+
+</div>
+{% endblock %}

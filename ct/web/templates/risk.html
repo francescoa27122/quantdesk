@@ -1,0 +1,210 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}Risk · QuantDesk{% endblock %}
+
+{% block content %}
+<div class="pagehead">
+  <div>
+    <h1>Risk</h1>
+    <p class="pagehead-sub">Every signal passes all of these. Any one failure rejects the order
+      and writes a row to <code>signals</code> with the reason.</p>
+  </div>
+  <div class="pagehead-actions">
+    <button class="btn btn--ghost btn--sm" data-control="resume"
+            data-confirm="Resume opening positions? The engine refuses while reconciliation has not passed.">Resume</button>
+    <button class="btn btn--danger btn--sm" data-control="halt"
+            data-confirm="Halt the engine? New positions stop; existing stops and exits keep working.">Halt</button>
+  </div>
+</div>
+
+{% if not has_config %}
+<div class="alert alert--info alert--quiet" role="note">
+  No <code>risk_config</code> row exists for this account, so the engine is running on the
+  <code>RiskLimits</code> dataclass defaults shown below. That is a valid state, not an error —
+  but it means a change to the code changes the limits, with no record of when.
+</div>
+{% endif %}
+
+<div class="grid grid--two">
+
+  <section class="card card--wide">
+    <header class="card-head">
+      <div><h2 class="card-title">The gate stack</h2>
+        <p class="card-sub">Order matters: the cheapest and most absolute checks run first</p></div>
+    </header>
+    <div class="card-body card-body--flush">
+      {% set gross = (latest.gross_exposure|float) if latest else none %}
+      {% set dd = (latest.drawdown|float) if latest else none %}
+      <table class="tbl tbl--gates">
+        <thead><tr><th class="r">#</th><th>Gate</th><th class="r">Limit</th>
+          <th class="r">Now</th><th>State</th><th>On breach</th></tr></thead>
+        <tbody>
+          <tr><td class="r dim">1</td><td>Kill switch</td><td class="r dim">file or DB</td>
+            <td class="r">{{ 'ENGAGED' if engine.kill else 'clear' }}</td>
+            <td>{{ m.badge('blocking', 'danger') if engine.kill else m.badge('clear', 'ok') }}</td>
+            <td class="dim">Reject all, exits included</td></tr>
+          <tr><td class="r dim">2</td><td>Live arming valid</td><td class="r dim">human-rooted</td>
+            <td class="r">{{ 'armed' if engine.armed else 'not armed' }}</td>
+            <td>{% if mode != 'live' %}{{ m.badge('n/a in paper', 'neutral') }}
+                {% elif engine.armed %}{{ m.badge('valid', 'ok') }}
+                {% else %}{{ m.badge('blocking', 'danger') }}{% endif %}</td>
+            <td class="dim">Reject all live orders</td></tr>
+          <tr><td class="r dim">3</td><td>Market data freshness</td>
+            <td class="r num">{{ limits.max_data_age_bars }} bars</td>
+            <td class="r num">{% if coverage %}{{ coverage|map(attribute='timeframe')|list|length }} series{% else %}none{% endif %}</td>
+            <td>{{ m.badge(worst_freshness,
+                    'ok' if worst_freshness == 'ok' else
+                    ('warn' if worst_freshness == 'slow' else 'danger'),
+                    'Worst state across every stored series') }}</td>
+            <td class="dim">Reject; risk_event</td></tr>
+          <tr><td class="r dim">4</td><td>Exchange connectivity / clock skew</td>
+            <td class="r num">2 s</td><td class="r dim">not stored</td>
+            <td>{{ m.badge('not measured here', 'neutral', 'Enforced in the engine at evaluation time; no row records it') }}</td>
+            <td class="dim">Reject</td></tr>
+          <tr><td class="r dim">5</td><td>Per-order notional cap</td>
+            <td class="r num">{{ limits.max_position_pct|pct(0) }}</td><td class="r dim">per order</td>
+            <td>{{ m.badge('active', 'ok') }}</td><td class="dim">Clamp, or reject below exchange minimum</td></tr>
+          <tr><td class="r dim">6</td><td>Per-symbol exposure</td>
+            <td class="r num">{{ limits.max_symbol_exposure|pct(0) }}</td>
+            <td class="r num">{{ exposure|length }} symbol{{ 's' if exposure|length != 1 }}</td>
+            <td>{{ m.badge('active', 'ok') }}</td><td class="dim">Clamp</td></tr>
+          <tr class="{{ 'row--warn' if gross and gross > limits.max_gross_exposure * 0.9 }}">
+            <td class="r dim">7</td><td>Gross exposure</td>
+            <td class="r num">{{ limits.max_gross_exposure|pct(0) }}</td>
+            <td class="r num">{{ gross|pct if gross is not none else '—' }}</td>
+            <td>{{ charts.meter(gross or 0, limits.max_gross_exposure, label='gross')|safe }}</td>
+            <td class="dim">Clamp</td></tr>
+          <tr><td class="r dim">8</td><td>Max concurrent positions</td>
+            <td class="r num">{{ limits.max_open_positions }}</td>
+            <td class="r num">{{ positions|length }}</td>
+            <td>{{ charts.meter(positions|length, limits.max_open_positions, label='books')|safe }}</td>
+            <td class="dim">Reject new</td></tr>
+          <tr><td class="r dim">9</td><td>Correlation cluster cap</td>
+            <td class="r num">{{ limits.max_cluster_exposure|pct(0) }}</td>
+            <td class="r dim">ρ&gt;0.8 groups</td>
+            <td>{{ m.badge('active', 'ok') }}</td><td class="dim">Clamp</td></tr>
+          <tr><td class="r dim">10</td><td>Leverage</td>
+            <td class="r num">{{ limits.max_leverage }}×</td><td class="r num">spot</td>
+            <td>{{ m.badge('hard', 'ok', 'Spot only — raising this is a money-boundary change') }}</td>
+            <td class="dim">Hard reject</td></tr>
+          <tr><td class="r dim">11</td><td>Daily drawdown</td>
+            <td class="r num">{{ limits.max_daily_drawdown|pct(0) }}</td><td class="r dim">per UTC day</td>
+            <td>{{ m.badge('active', 'ok') }}</td><td class="dim">Halt new entries for the day</td></tr>
+          <tr><td class="r dim">12</td><td>Weekly drawdown</td>
+            <td class="r num">{{ limits.max_weekly_drawdown|pct(0) }}</td><td class="r dim">per week</td>
+            <td>{{ m.badge('active', 'ok') }}</td><td class="dim">Halt for the week</td></tr>
+          <tr class="{{ 'row--warn' if dd and dd > limits.max_total_drawdown * 0.5 }}">
+            <td class="r dim">13</td><td>Max total drawdown from HWM</td>
+            <td class="r num">{{ limits.max_total_drawdown|pct(0) }}</td>
+            <td class="r num">{{ dd|pct if dd is not none else '—' }}</td>
+            <td>{{ charts.meter(dd or 0, limits.max_total_drawdown, label='drawdown')|safe }}</td>
+            <td class="dim">Flatten, disarm live, page</td></tr>
+          <tr><td class="r dim">14</td><td>Consecutive-loss breaker</td>
+            <td class="r num">{{ limits.max_consecutive_losses }}</td>
+            <td class="r num">{{ engine.paused_strategies|length }} paused</td>
+            <td>{{ m.badge('active' if not engine.paused_strategies else 'tripped',
+                           'ok' if not engine.paused_strategies else 'warn') }}</td>
+            <td class="dim">Pause the offending strategy {{ limits.loss_pause_hours|int }} h</td></tr>
+          <tr><td class="r dim">15</td><td>Min expected edge vs fees</td>
+            <td class="r num">{{ limits.min_edge_bps }} bps</td>
+            <td class="r num">{{ (limits.taker_fee_bps * 2 + limits.assumed_slippage_bps)|int }} bps cost</td>
+            <td>{{ m.badge('active', 'ok', 'The §0.1 fee arithmetic, in code') }}</td>
+            <td class="dim">Reject</td></tr>
+          <tr><td class="r dim">16</td><td>Order-rate limiter</td>
+            <td class="r num">{{ limits.max_orders_per_hour }}/hr</td>
+            <td class="r dim">runaway backstop</td>
+            <td>{{ m.badge('active', 'ok') }}</td><td class="dim">Reject; risk_event</td></tr>
+        </tbody>
+      </table>
+      <p class="tbl-note">Two rows say <b>not measured here</b> rather than green.
+      Connectivity and clock skew are checked inside the engine at evaluation time
+      and leave no row behind, so this page cannot honestly claim they are healthy.</p>
+    </div>
+  </section>
+
+  {% call m.card('Risk events', 'Breaches, halts and circuit-breaker trips') %}
+    {% if risk_events %}
+    <table class="tbl tbl--dense">
+      <thead><tr><th>When</th><th>Severity</th><th>Code</th><th>Detail</th><th>Resolved</th><th></th></tr></thead>
+      <tbody>
+      {% for e in risk_events %}
+        <tr class="{{ e.severity|severity_class }}">
+          <td class="dim">{{ m.when(e.ts) }}</td>
+          <td>{{ m.badge(e.severity, 'danger' if e.severity == 'critical' else 'warn') }}</td>
+          <td class="num">{{ e.code }}</td>
+          <td>{{ e.detail|truncate(90) }}</td>
+          <td class="dim">{{ m.when(e.resolved_at) if e.resolved_at else 'open' }}</td>
+          <td>
+            {% if not e.resolved_at %}
+            <button class="btn btn--ghost btn--sm" data-control="resolve_risk_event"
+                    data-event-id="{{ e.id }}"
+                    data-confirm="Mark {{ e.code }} as resolved? This only acknowledges the record — it does not change any trading state."
+                    title="Acknowledge this event. The engine applies it on its next cycle (~20 s).">Resolve</button>
+            {% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+      {{ m.empty('No risk events recorded',
+                 'The engine writes one on a drawdown halt, a reconciliation mismatch or a strategy quarantine. None has fired.') }}
+    {% endif %}
+  {% endcall %}
+
+  {% call m.card('Control history', 'What was asked, and what the engine did with it') %}
+    {% if commands %}
+    <table class="tbl tbl--dense">
+      <thead><tr><th>When</th><th>Command</th><th>By</th><th>Applied</th><th>Result</th></tr></thead>
+      <tbody>
+      {% for c in commands %}
+        <tr>
+          <td class="dim">{{ m.when(c.ts) }}</td>
+          <td><code>{{ c.command }}</code>{% if c.args %}<i class="dim">{{ c.args }}</i>{% endif %}</td>
+          <td class="dim">{{ c.requested_by }}</td>
+          <td>{% if c.applied_at %}{{ m.when(c.applied_at) }}{% else %}{{ m.badge('pending', 'warn', 'The engine applies it on its next cycle') }}{% endif %}</td>
+          <td class="dim">{{ c.result or '—' }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+      {{ m.empty('No control commands issued') }}
+    {% endif %}
+  {% endcall %}
+
+  {% call m.card('Live arming', 'A human originates; the engine sustains; anything meaningful re-asks') %}
+    {% if arming %}
+      <dl class="kvs">
+        {{ m.kv('State', 'ARMED') }}
+        {{ m.kv('Origin', arming.origin) }}
+        {{ m.kv('Expires', arming.expires_at|stamp) }}
+        {{ m.kv('In', timedelta_words(arming.expires_in_s)) }}
+        {{ m.kv('Max notional', arming.max_notional_usd|money ~ ' USD') }}
+        {{ m.kv('Symbols', arming.allowed_symbols|join(', ')) }}
+        {{ m.kv('Strategies', arming.allowed_strategies|join(', ')) }}
+        {{ m.kv('Gate forced', 'YES — audited' if arming.gate_forced else 'no') }}
+      </dl>
+      <button class="btn btn--danger btn--sm" data-control="disarm-note" disabled
+              title="Disarming is a CLI action: qd disarm">Disarm via CLI</button>
+    {% else %}
+      {{ m.empty('Not armed for live trading',
+                 'Arming gates live only — in paper mode it is irrelevant. It is originated by a person typing a phrase at a terminal (qd arm-live) and never by this dashboard.') }}
+    {% endif %}
+    <p class="note">This page cannot arm. The confirmation phrase can only be typed at
+    an interactive terminal, which closes every automation path to it — including this one.</p>
+  {% endcall %}
+
+  {% call m.card('Configured limits', 'Versioned in risk_config; the engine reads the newest row') %}
+    <dl class="kvs kvs--two">
+      {% for key, value in limits.items()|sort %}
+        <div class="kv{% if key in configured %} kv--override{% endif %}">
+          <dt>{{ key }}</dt>
+          <dd class="num">{{ value }}{% if key in configured %}<i class="dim" title="Overridden in risk_config; default {{ defaults[key] }}">set</i>{% endif %}</dd>
+        </div>
+      {% endfor %}
+    </dl>
+  {% endcall %}
+
+</div>
+{% endblock %}

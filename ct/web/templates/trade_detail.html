@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}Replay · QuantDesk{% endblock %}
+
+{% block content %}
+<div class="pagehead">
+  <div>
+    <h1>Trade replay</h1>
+    <p class="pagehead-sub"><code>{{ correlation_id }}</code> · {{ events|length }} events</p>
+  </div>
+  <div class="pagehead-actions"><a class="btn btn--ghost btn--sm" href="/trades">← All trades</a></div>
+</div>
+
+<section class="card card--wide">
+  <header class="card-head">
+    <div><h2 class="card-title">Causal chain</h2>
+      <p class="card-sub">Indented by <code>causation_id</code> — a chain of <em>because</em>, not a list of <em>and then</em></p></div>
+  </header>
+  <div class="card-body">
+    {% set seqs = events|map(attribute='seq')|list %}
+    <ol class="timeline">
+      {% for e in events %}
+      <li class="tl-item {{ e.severity|severity_class }}{% if e.causation_id in seqs %} tl-item--caused{% endif %}">
+        <span class="tl-dot" aria-hidden="true"></span>
+        <div class="tl-body">
+          <div class="tl-head">
+            <b>{{ e.type|event_label }}</b>
+            <span class="tl-group">{{ e.type|event_group }}</span>
+            <span class="tl-src dim">{{ e.source }}</span>
+            <span class="tl-seq num dim" title="Monotonic sequence — the total order of everything that happened">#{{ e.seq }}</span>
+            <span class="tl-time dim">{{ e.ts|stamp }}</span>
+          </div>
+          {% if e.payload %}
+          <dl class="tl-payload">
+            {% for k, v in e.payload.items() %}
+              <div><dt>{{ k }}</dt><dd class="num">{{ v }}</dd></div>
+            {% endfor %}
+          </dl>
+          {% endif %}
+          {% if e.causation_id %}
+          <p class="tl-cause dim">caused by #{{ e.causation_id }}</p>
+          {% endif %}
+        </div>
+      </li>
+      {% endfor %}
+    </ol>
+  </div>
+</section>
+{% endblock %}

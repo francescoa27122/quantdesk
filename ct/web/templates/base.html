@@ -1,0 +1,105 @@
+{% import "macros.html" as m %}<!doctype html>
+<html lang="en" data-page="{{ active }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#08090c">
+  <title>{% block title %}QuantDesk{% endblock %}</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+</head>
+<body data-csrf="{{ csrf }}" data-account="{{ engine.mode if engine else '' }}">
+
+<a class="skip" href="#main">Skip to content</a>
+
+<aside class="rail">
+  <a class="brand" href="/">
+    <span class="brand-mark" aria-hidden="true">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3 17l5-6 4 3 6-9"/>
+      </svg>
+    </span>
+    <span class="brand-text">QuantDesk<small>{{ mode }}</small></span>
+  </a>
+
+  <nav class="nav" aria-label="Sections">
+    {% for href, label, key in nav_main %}
+    <a class="nav-item{% if active == key %} is-active{% endif %}" href="{{ href }}"
+       data-nav="{{ key }}">{{ m.nav_icon(key) }}<span>{{ label }}</span></a>
+    {% endfor %}
+    {# The expert layer: collapsed by default, one click away, never removed.
+       Rendered open when the CURRENT page lives inside it, so navigating an
+       advanced page never hides its own siblings. #}
+    <details class="nav-adv" id="nav-advanced"{% if active in advanced_keys %} open{% endif %}>
+      <summary class="nav-item nav-adv-toggle">
+        {{ m.nav_icon('details') }}<span>Details</span>
+        <svg class="nav-adv-chev" viewBox="0 0 12 12" width="10" height="10" fill="none"
+             stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
+             aria-hidden="true"><path d="M3 4.5l3 3 3-3"/></svg>
+      </summary>
+      {% for href, label, key in nav_advanced %}
+      <a class="nav-item{% if active == key %} is-active{% endif %}" href="{{ href }}"
+         data-nav="{{ key }}">{{ m.nav_icon(key) }}<span>{{ label }}</span></a>
+      {% endfor %}
+    </details>
+  </nav>
+
+  <div class="rail-foot">
+    <button class="btn btn--ghost btn--sm btn--block" data-open-palette type="button">
+      <span>Command</span><kbd>⌘K</kbd>
+    </button>
+    <div class="whoami">
+      <span class="whoami-user">{{ session.user }}</span>
+      <span class="whoami-role">{{ session.role }}</span>
+      <form method="post" action="/logout"><button class="linkish" type="submit">Sign out</button></form>
+    </div>
+  </div>
+</aside>
+
+<div class="shell">
+  {% include "partials/statusbar.html" %}
+
+  <main id="main" class="main">
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="foot">
+    <span>Every figure on this page is read from the database. <code>qd-web</code> computes nothing the engine computes.</span>
+    <span class="foot-right">rendered {{ now|stamp }}</span>
+  </footer>
+</div>
+
+<div class="toasts" id="toasts" aria-live="polite" aria-atomic="false"></div>
+
+<div class="palette" id="palette" hidden>
+  <div class="palette-scrim" data-close-palette></div>
+  <div class="palette-box" role="dialog" aria-modal="true" aria-label="Command palette">
+    <input class="palette-input" id="palette-input" type="text" autocomplete="off"
+           spellcheck="false" placeholder="Jump to a page, or run a command…">
+    <ul class="palette-list" id="palette-list"></ul>
+    <div class="palette-foot"><kbd>↑</kbd><kbd>↓</kbd> navigate <kbd>↵</kbd> run <kbd>esc</kbd> close</div>
+  </div>
+</div>
+
+<div class="modal" id="confirm" hidden>
+  <div class="modal-scrim" data-close-modal></div>
+  <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+    <h3 class="modal-title" id="confirm-title">Confirm</h3>
+    <p class="modal-body" id="confirm-body"></p>
+    <div class="modal-typed" id="confirm-typed" hidden>
+      <label for="confirm-input">Type <b id="confirm-word">CONFIRM</b> to continue</label>
+      <input id="confirm-input" type="text" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn--ghost" type="button" data-close-modal>Cancel</button>
+      <button class="btn btn--danger" type="button" id="confirm-go">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<div class="tooltip" id="tooltip" hidden></div>
+
+<script src="/static/app.js" defer></script>
+</body>
+</html>

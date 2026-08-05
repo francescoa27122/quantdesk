@@ -1,0 +1,75 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least privilege. Nothing here needs to write to the repository; a compromised
+# action or dependency therefore cannot push, tag, or open a release.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # Actions are pinned to a commit SHA, not a tag. A tag is mutable: whoever
+      # controls the action's repo can repoint v4 at new code and it runs here
+      # with this job's token.
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Types
+        run: mypy ct
+
+      # The suite is offline by design: no database, no exchange, no network.
+      # If this step ever needs a service container, that is a smell worth
+      # investigating before adding one.
+      - name: Tests
+        run: pytest -q
+
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      # `target: base` is deliberate and load-bearing. Without it Docker builds
+      # the LAST stage (`ml`), which ships LightGBM, pandas, scikit-learn,
+      # scipy, hmmlearn and arch into every trading container — 745 MB measured,
+      # and the exact opposite of the stated design. Build it here so a
+      # regression shows up in CI rather than on the NAS.
+      - name: Build the trading image
+        run: docker build -f docker/Dockerfile --target base -t quantdesk:base .
+
+      - name: Verify the trading image has no ML dependencies
+        run: |
+          if docker run --rm quantdesk:base python -c "import lightgbm" 2>/dev/null; then
+            echo "::error::qd-engine image contains LightGBM — the build target regressed"
+            exit 1
+          fi
+          echo "ok: no ML dependencies in the base image"

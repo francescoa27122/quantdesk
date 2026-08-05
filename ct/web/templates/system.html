@@ -1,0 +1,169 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}System · QuantDesk{% endblock %}
+
+{% block content %}
+<div class="pagehead">
+  <div>
+    <h1>System</h1>
+    <p class="pagehead-sub">Host metrics come from the NAS's existing
+      <code>health-collector</code>, read from a file. Two collectors disagreeing about
+      CPU load is a support call nobody needs.</p>
+  </div>
+</div>
+
+<div class="grid grid--two">
+
+  {% call m.card('Host', 'UGreen DXP2800 · Intel N100') %}
+    {% if host.available %}
+      <div class="gauges">
+        <div class="gauge">
+          <span class="gauge-label">CPU</span>
+          <span class="gauge-value num">{{ host.cpu_pct|round|int }}%</span>
+          {{ charts.sparkline(host.hist.get('cpu', []), tone='down')|safe }}
+          <span class="gauge-sub dim">load {{ host.load1 }} / {{ host.cores }} cores</span>
+        </div>
+        <div class="gauge">
+          <span class="gauge-label">RAM</span>
+          <span class="gauge-value num">{{ host.ram_pct|round|int }}%</span>
+          {{ charts.sparkline(host.hist.get('ram', []), tone='down')|safe }}
+          <span class="gauge-sub dim">{{ host.ram_avail_mb|round|int }} MB free</span>
+        </div>
+        <div class="gauge">
+          <span class="gauge-label">Temp</span>
+          <span class="gauge-value num">{{ host.cpu_temp|round|int }}°C</span>
+          {{ charts.sparkline(host.hist.get('temp', []), tone='down')|safe }}
+          <span class="gauge-sub dim">nvme + hdd in SMART</span>
+        </div>
+        <div class="gauge">
+          <span class="gauge-label">Disk</span>
+          <span class="gauge-value num">{{ host.disk_pct|round(1) }}%</span>
+          <span class="gauge-bar">{{ charts.meter(host.disk_pct, 100, label='disk')|safe }}</span>
+          <span class="gauge-sub dim">{{ host.disk_free_tb|round(1) }} TB free</span>
+        </div>
+      </div>
+      <dl class="kvs">
+        {{ m.kv('Uptime', host.uptime_days|round(1) ~ ' days') }}
+        {{ m.kv('Ping', host.ping_ms|round|int ~ ' ms') }}
+        {{ m.kv('Metrics stamp', host.ts) }}
+      </dl>
+    {% else %}
+      {{ m.empty('Host metrics not available', host.reason ~
+                 ' — the compose bind mount for /hosthealth points at the agent platform’s health directory.') }}
+    {% endif %}
+  {% endcall %}
+
+  {% call m.card('Containers', 'From the same collector') %}
+    {% if host.available and host.containers %}
+    <table class="tbl tbl--dense">
+      <thead><tr><th>Name</th><th>State</th><th class="r">CPU</th><th>Status</th></tr></thead>
+      <tbody>
+      {% for c in host.containers %}
+        <tr>
+          <td class="num">{{ c.name }}</td>
+          <td>{{ m.badge(c.state, 'ok' if c.state == 'running' else 'danger') }}</td>
+          <td class="r num">{{ c.cpu if c.cpu is defined else '—' }}</td>
+          <td class="dim">{{ c.status }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+      {{ m.empty('No container data') }}
+    {% endif %}
+  {% endcall %}
+
+  {% call m.card('Database', 'TimescaleDB — the single source of every number on this dashboard') %}
+    <dl class="kvs">
+      {{ m.kv('Size on disk', db.size or '—') }}
+      {{ m.kv('Schema sha256', db.schema_sha or 'not stamped',
+              title='bootstrap() warns when schema.sql no longer matches the running database') }}
+      {{ m.kv('Applied', db.schema_applied|stamp if db.schema_applied else '—') }}
+      {{ m.kv('Events / hour', db.events_last_hour|compact) }}
+    </dl>
+    <div class="counts">
+      {% for key, value in db.counts.items() %}
+        <div class="count"><b class="num">{{ value|compact }}</b><span>{{ key }}</span></div>
+      {% endfor %}
+    </div>
+  {% endcall %}
+
+  {% call m.card('Market data', 'Coverage and freshness per series') %}
+    {% if coverage %}
+    <table class="tbl tbl--dense">
+      <thead><tr><th>Symbol</th><th>TF</th><th class="r">Bars</th><th class="r">Imported</th>
+        <th class="r">Earliest</th><th class="r">Age</th><th></th></tr></thead>
+      <tbody>
+      {% for c in coverage %}
+        {% set state = freshness(c.age_s, c.timeframe) %}
+        <tr>
+          <td class="num">{{ c.symbol }}</td><td class="dim">{{ c.timeframe }}</td>
+          <td class="r num">{{ c.bars|compact }}</td>
+          <td class="r num dim">{{ c.imported|compact }}</td>
+          <td class="r dim">{{ c.earliest|stamp if c.earliest else '—' }}</td>
+          <td class="r num">{{ timedelta_words(c.age_s) }}</td>
+          <td class="r">{{ m.badge(state, 'ok' if state == 'ok' else ('warn' if state == 'slow' else 'danger')) }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    <p class="tbl-note"><b>Imported</b> counts bars marked <code>is_gap_fill</code> —
+    fetched or CSV-imported rather than streamed live. Kraken's API retains only ~720
+    intervals per timeframe, so deep history can only be imported, never fetched.</p>
+    {% else %}
+      {{ m.empty('No candles stored', 'Start qd-collector, or run qd import-history.') }}
+    {% endif %}
+  {% endcall %}
+
+  {% call m.card('Notifications', 'The transactional outbox') %}
+    <div class="counts">
+      {% for status, n in notifications.counts.items() %}
+        <div class="count"><b class="num">{{ n }}</b><span>{{ status }}</span></div>
+      {% endfor %}
+      {% if not notifications.counts %}<div class="count"><b class="num">0</b><span>rows</span></div>{% endif %}
+    </div>
+    <p class="note"><b>The sender is a stub.</b> The engine's drain logs the message and
+    reports success, so the outbox empties against nothing. Rows reaching <code>sent</code>
+    here means "handed to a placeholder", not "delivered to your phone".</p>
+    {% if notifications.recent %}
+    <table class="tbl tbl--dense">
+      <thead><tr><th>When</th><th>Channel</th><th>Subject</th><th>Status</th></tr></thead>
+      <tbody>
+      {% for n in notifications.recent[:8] %}
+        <tr><td class="dim">{{ m.when(n.ts) }}</td><td>{{ n.channel }}</td>
+          <td>{{ n.subject or n.body|truncate(50) }}</td>
+          <td>{{ m.badge(n.status, 'ok' if n.status == 'sent' else ('danger' if n.status == 'failed' else 'warn')) }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  {% endcall %}
+
+  {% call m.card('Processes', 'What this dashboard can see of the other containers') %}
+    <dl class="kvs">
+      {{ m.kv('qd-web uptime', timedelta_words(uptime_s)) }}
+      {{ m.kv('Engine heartbeat', timedelta_words(engine.age_s) if engine.seen else 'never seen') }}
+      {{ m.kv('Engine cycles', engine.cycles|compact) }}
+      {{ m.kv('Collector heartbeat', timedelta_words(engine.collector_age_s) if engine.collector_seen else 'never seen') }}
+      {{ m.kv('Bars stored (collector)', engine.collector.get('bars_stored', '—')) }}
+      {{ m.kv('Reconnects', engine.collector.get('reconnects', '—')) }}
+    </dl>
+    <p class="note">The containers share no channel — only files and the database
+    (§1). This is what the engine last <em>said</em>, not a live probe of it.</p>
+  {% endcall %}
+
+  {% call m.card('Accounts', '') %}
+    <table class="tbl tbl--dense">
+      <thead><tr><th class="r">ID</th><th>Name</th><th>Mode</th><th>Exchange</th><th class="r">Initial</th></tr></thead>
+      <tbody>
+      {% for a in accounts %}
+        <tr><td class="r num">{{ a.id }}</td><td>{{ a.name }}</td>
+          <td>{{ m.badge(a.mode, 'danger' if a.mode == 'live' else 'neutral') }}</td>
+          <td class="dim">{{ a.exchange }}</td><td class="r num">{{ a.initial_equity|money(0) }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  {% endcall %}
+
+</div>
+{% endblock %}

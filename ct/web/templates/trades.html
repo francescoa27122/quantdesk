@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}Trades · QuantDesk{% endblock %}
+
+{% block content %}
+<div class="pagehead">
+  <div>
+    <h1>Trades</h1>
+    <p class="pagehead-sub">{{ lede }}</p>
+  </div>
+  <div class="pagehead-actions">
+    <a class="btn btn--ghost btn--sm" href="/api/v1/trades?limit=500" download="trades.json">Export JSON</a>
+  </div>
+</div>
+
+<details class="alert alert--info alert--quiet" role="note">
+  <summary><b>How this page works</b> (for the curious)</summary>
+  Each row is one <code>correlation_id</code>: signal → risk → order → fill → close,
+  reassembled from the event log. Why the event log and not the <code>trades</code>
+  table: nothing in the codebase writes <code>trades</code> — a page built on it would
+  sit permanently empty and read as "no trades yet" rather than "nothing records
+  this". Lifecycles are derived from events that <em>are</em> written, and they carry
+  the rejection reason, the maker ratio and the causal chain, which the table would not.
+</details>
+
+<form class="filters" method="get" action="/trades">
+  <label class="field">
+    <span>Strategy</span>
+    <select name="strategy">
+      <option value="">all</option>
+      {% for s in strategies %}
+        <option value="{{ s.strategy }}"{% if filter_strategy == s.strategy %} selected{% endif %}>{{ s.strategy }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label class="field">
+    <span>Symbol</span>
+    <input type="text" name="symbol" value="{{ filter_symbol or '' }}" placeholder="BTC/USD" spellcheck="false">
+  </label>
+  <label class="field field--check">
+    <input type="checkbox" name="closed" value="1"{% if closed_only %} checked{% endif %}>
+    <span>Closed only</span>
+  </label>
+  <button class="btn btn--sm" type="submit">Apply</button>
+  {% if filter_strategy or filter_symbol or closed_only %}
+    <a class="btn btn--ghost btn--sm" href="/trades">Clear</a>
+  {% endif %}
+</form>
+
+<section class="card card--wide">
+  <header class="card-head">
+    <div><h2 class="card-title">{{ lifecycles|length }} lifecycle{{ 's' if lifecycles|length != 1 }}</h2>
+      <p class="card-sub">Newest first</p></div>
+  </header>
+  <div class="card-body card-body--flush">
+    {% if lifecycles %}
+    <table class="tbl tbl--hover tbl--dense">
+      <thead><tr>
+        <th>Started</th><th>Strategy</th><th>Symbol</th><th>Outcome</th>
+        <th class="r">Fills</th><th class="r">Maker</th><th class="r">Fees</th>
+        <th class="r">Net P&amp;L</th><th class="r">Events</th><th></th>
+      </tr></thead>
+      <tbody>
+      {% for t in lifecycles %}
+        <tr>
+          <td class="dim">{{ m.when(t.started_at) }}</td>
+          <td>{{ t.strategy or '—' }}</td>
+          <td class="num">{{ t.symbol or '—' }}</td>
+          <td>
+            {% if t.was_rejected %}
+              {{ m.badge(t.reject_code or 'rejected', 'warn', 'Risk refused this signal') }}
+            {% elif t.is_closed %}
+              {{ m.badge('closed', 'ok') }}
+            {% elif t.fill_count %}
+              {{ m.badge('open', 'accent') }}
+            {% else %}
+              {{ m.badge('no fill', 'neutral') }}
+            {% endif %}
+          </td>
+          <td class="r num">{{ t.fill_count }}</td>
+          <td class="r num">{% if t.maker_ratio is none %}<span class="dim">—</span>{% else %}{{ t.maker_ratio|float|pct(0) }}{% endif %}</td>
+          <td class="r num">{{ t.fees_paid|money(4) }}</td>
+          <td class="r num tone-{{ t.net_pnl|tone }}">{{ t.net_pnl|signed if t.net_pnl is not none else '—' }}</td>
+          <td class="r num dim">{{ t.event_count }}</td>
+          <td class="r"><a class="cell-link" href="/trades/{{ t.correlation_id }}">Replay →</a></td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    <p class="tbl-note">A blank maker ratio means <em>no fills</em>, not zero maker
+    fills — the distinction a NULL once hid, overstating the fixture average by 50%.</p>
+    {% else %}
+      {{ m.empty('No lifecycles recorded',
+                 'A lifecycle appears as soon as a strategy emits its first signal — rejected signals count.') }}
+    {% endif %}
+  </div>
+</section>
+{% endblock %}

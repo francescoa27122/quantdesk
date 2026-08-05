@@ -1,0 +1,522 @@
+# QuantDesk
+
+Self-hosted algorithmic crypto trading platform for the UGreen DXP2800.
+
+**Design decisions and rationale: [ARCHITECTURE.md](ARCHITECTURE.md). Read it first.**
+This file is the deployment and maintenance guide.
+
+---
+
+## Read this before anything else
+
+1. **Fees, not code, are the binding constraint.** Kraken spot at the $0 tier is
+   0.40% taker → **0.80% round-trip**. A strategy taking 200 trades a year needs
+   ~160%/yr gross just to break even. Everything here is designed to trade less.
+2. **Nothing in this repo has earned real money yet.** All seven strategies are
+   marked 🟡 *implemented but unproven*. The promotion gate (ARCHITECTURE.md §8.3)
+   exists to stop you skipping that step, including on a day when you feel sure.
+3. **Live trading needs two independent switches:** `QD_MODE=live` **and** a valid
+   unexpired row in `live_arming`, written only by `qd arm-live` after you type a
+   confirmation phrase. Setting the env var alone does nothing.
+4. **Most retail systematic crypto strategies do not beat buy-and-hold net of
+   fees.** Every report in this system compares against buy-and-hold BTC net of
+   the same fees and will say so plainly when yours doesn't.
+
+---
+
+## Current state
+
+| Component | Status |
+|---|---|
+| Domain models, position accounting | ✅ built, tested |
+| Risk engine (17 gates, 3-way sizing) | ✅ built, tested |
+| `AccountStateBuilder` (shared by backtest + live) | ✅ built, tested |
+| Event bus + durable log + replay | ✅ built, tested, wired into the portfolio engine |
+| Portfolio backtester (N symbols × M strategies) | ✅ built, tested |
+| Single-symbol backtest engine + cost model | ✅ built, tested |
+| Metrics incl. PSR / deflated Sharpe | ✅ built, tested |
+| Purged walk-forward + Monte Carlo | ✅ built, tested |
+| 7 strategies | 🟡 built, unproven |
+| Strategy lifecycle FSM + allocator (`ct/strategies/lifecycle.py`, `ct/risk/allocator.py`) | ✅ built, tested |
+| Paper broker | 🟡 built, needs live quotes to exercise |
+| Persistence (`ct/store/`) — repos, outbox, reconciliation, PG event sink | ✅ built, tested against real TimescaleDB |
+| Docker stack, DB schema | ✅ written, **not yet deployed to the NAS** |
+| Market data service (`ct/data/`) — feed, integrity, backfill, history import | ✅ built, tested, smoke-tested live |
+| Trading engine (`ct/engine/`) — loop, control plane, execution | ✅ built, tested, run end-to-end |
+| CLI (`ct/cli.py`) — every `qd …` command below | ✅ built, tested |
+| Dashboard (`ct/web/`) — 7 pages, SSE, JSON API, `/metrics` | ✅ built, tested, rendered against seeded data |
+| Live broker + arming ceremony | 🟡 `qd arm-live` writes the arming; **no live broker exists**, and `qd-engine` refuses to start in `QD_MODE=live` |
+| ML (regime HMM, meta-labeller) | ⛔ Phase 5 |
+
+`521 local tests + 39 database tests passing` (`pytest tests/ -q`, ~40 s on this hardware), `ruff check --select F,E9` clean.
+
+### The `qd` commands
+
+`qd` is `ct.cli:main`, installed by the image. Exit codes are load-bearing:
+**0** ok · **1** failure · **2** usage · **3** refused by a gate.
+
+| Command | Does |
+|---|---|
+| `qd backtest` | one strategy on one symbol, or N×M as a portfolio |
+| `qd walkforward` | purged walk-forward, optional Monte Carlo — **the honest evaluation** |
+| `qd promotion-status` | the paper→live gate, per strategy |
+| `qd init-db` | apply `db/schema.sql` to an empty database |
+| `qd migrate` | apply pending Alembic migrations · `--status` · `--sql` to review first |
+| `qd coverage` | what candle data actually exists, with gap counts |
+| `qd backfill` | REST catch-up inside the venue's retained window |
+| `qd import-history` | Kraken bulk OHLCVT CSVs (zip or directory) |
+| `qd status` | equity, open books, arming, unresolved risk events |
+| `qd halt` / `qd resume` | queue a control command the engine applies next cycle |
+| `qd flatten` | reduce-only market closes next cycle; clears on FLATTEN_COMPLETE |
+| `qd strategies` | lifecycle state of every registered strategy |
+| `qd enable-strategy` | **the paper gate** — `proposed`→`paper`; interactive terminal only |
+| `qd pause-strategy` / `qd resume-strategy` | one strategy on or off |
+| `qd kill --engage` / `--release` | the file kill switch; needs no database |
+| `qd arm-live` | **the human gate** — interactive terminal only |
+| `qd disarm` / `qd arming-status` | revoke, and see whether renewal will continue |
+| `qd hash-password` | argon2id hash for `QD_ADMIN_PASSWORD_HASH` (or `…_FILE`) |
+
+Research commands read candles from Postgres, or from a Kraken CSV/zip/directory
+with `--csv`, which runs with no database at all:
+
+```bash
+qd backtest --strategy ema_cross --symbol BTC/USD --csv ./XBTUSD_240.csv
+```
+
+One command the maintenance table used to name is **not built**: `qd refit
+--all` (the quarterly re-fit is Phase 5). Use `qd walkforward` instead.
+Backups are not a `qd` command at all — the `qd-backup` sidecar runs them
+(see Maintenance).
+
+---
+
+## Configuration
+
+Two mechanisms, deliberately, because they have different lifetimes and
+different threat models.
+
+**Deployment and secrets — environment.** Typed in `ct/config.py`
+(`pydantic-settings`). Every field maps to a `QD_`-prefixed variable:
+`db_dsn` ← `QD_DB_DSN`. Any of them can be supplied indirectly as
+`QD_<NAME>_FILE=/run/secrets/x`, which is the Docker-secrets path and the one
+to use in production — a secret passed as a plain env var is visible in
+`docker inspect`, in `/proc/<pid>/environ`, and in any crash dump that
+snapshots the environment.
+
+**Strategy parameters — `config/strategies.yml`, in version control.** These
+are research artifacts, not deployment settings. An entry lookback of 55 is a
+claim about the world that some backtest justified, and it belongs where
+`git log -p config/` shows who changed it and when. A parameter in an
+environment variable is unattributable, which is how a live system ends up
+running numbers nobody can explain.
+
+The file carries a `version:` you bump on every change, and its hash is
+recorded on every backtest row (`backtests.config_hash`), so a result six weeks
+old can be traced back to the exact configuration that produced it. Anything
+you omit falls back to the strategy's own defaults and is deliberately *not*
+folded into the hash — otherwise editing a default in Python would silently
+invalidate every historical record.
+
+`enabled:` in that file is the config's opinion. The database
+`strategies.enabled` column stays authoritative at run time, so pausing a
+strategy from the dashboard survives the next redeploy. Use
+`qd enable-strategy <name>` to actually turn one on.
+
+## Schema changes
+
+`db/schema.sql` is the Alembic baseline and is applied by Postgres on first
+boot via `/docker-entrypoint-initdb.d`. **After that, every change is a
+migration** — do not edit `schema.sql`, or a fresh install and an upgraded one
+will disagree the moment somebody forgets one of them.
+
+```bash
+alembic revision -m "what you are changing"   # write the SQL by hand
+qd migrate --sql                              # review it before it runs
+qd migrate                                    # apply
+qd migrate --status                           # current revision vs head
+```
+
+There is no `--autogenerate`: the schema is hand-written SQL with Timescale
+hypertables, and autogenerate proposes dropping the chunk tables Timescale
+manages. Write a real `downgrade()` too — "schema changes on a live trading DB
+need to be reversible" is the reason Alembic is here at all.
+
+Safe to run against an existing deployment: the baseline detects a schema that
+initdb already built and adopts it rather than trying to recreate it.
+
+## Scheduling
+
+The engine runs an in-process `AsyncIOScheduler` (ARCHITECTURE.md Merge 5), not
+a `while` loop and not a scheduler container — a separate container triggering
+work in this one would need an RPC path, and that is network surface on the
+order path.
+
+Two jobs: the trading cycle on an interval (`QD_CYCLE_SECONDS`, default 20) and
+promotion evaluation daily at 00:05 UTC. Both run with `max_instances=1` and
+`coalesce=True`. That is not tuning — `cycle()` mutates the account and places
+orders, so two at once is double-sizing against a stale snapshot, and a backlog
+after a stall must run *once*, not fifteen times.
+
+Jobs persist to Postgres when `QD_DB_DSN` is set, so the daily job's next-run
+time survives a restart. If the jobstore cannot be opened the engine still
+starts and trades, logging loudly that the schedule will not survive a restart.
+
+---
+
+## Prerequisites
+
+- **16 GB RAM in the NAS.** With the Minecraft server running you have ~2.0 GB
+  free; this stack wants ~2.2 GB always-on. One SODIMM, ~$40. If you skip it,
+  keep `qd-worker` profile-gated (it already is) and expect to stop Minecraft
+  while backtesting.
+- Docker + docker compose on the NAS (already present).
+- A Kraken account with an API key created as follows — **do this before you
+  paste a key anywhere:**
+  - Permissions: **Query Funds**, **Query Open/Closed Orders**, **Create & Modify Orders**
+  - **Withdraw Funds: OFF.** Not "off for now" — off.
+  - **IP allowlist: your NAS's egress IP.**
+
+  With withdrawal disabled, total compromise of the NAS costs you slippage, not
+  the balance. It is the single most effective control in this project.
+
+---
+
+## Deploy
+
+Deploy target: `/volume1/docker/quantdesk` on the NAS.
+
+1. **Copy the repo up.** `scp -O` is required — plain `scp` fails against UGOS.
+
+   ```bash
+   scp -O -i ~/.ssh/<your-key> -r ./quantdesk <admin-user>@<nas-host>:/volume1/docker/
+   ```
+
+2. **Create the secret files** (on the NAS, never in git):
+
+   ```bash
+   ssh -i ~/.ssh/<your-key> <admin-user>@<nas-host> 'mkdir -p /volume1/docker/quantdesk/secrets && chmod 700 /volume1/docker/quantdesk/secrets'
+   ```
+
+   Then write these four files, each containing only the value, no newline
+   fuss, `chmod 600`:
+   - `secrets/exchange_api_key`
+   - `secrets/exchange_api_secret`
+   - `secrets/telegram_bot_token`
+   - `secrets/session_secret` (`openssl rand -base64 48`)
+
+3. **Configure.**
+
+   ```bash
+   cp .env.example .env
+   ```
+
+   Set `POSTGRES_PASSWORD` (`openssl rand -base64 32`), `QD_TELEGRAM_CHAT_ID`,
+   and leave `QD_MODE=paper`.
+
+4. **Set the admin password hash.** On a deployed NAS the easy path is the
+   wrapper, which does all of the below in one go (prompt → `.env` → recreate
+   `qd-web`):
+
+   ```bash
+   /volume1/docker/quantdesk/reset-password.sh
+   ```
+
+   By hand instead:
+
+   ```bash
+   docker compose run --rm qd-web qd hash-password
+   ```
+
+   Paste the **`QD_ADMIN_PASSWORD_HASH=` line it prints** into `.env` verbatim.
+   That line has every `$` doubled, and it must: an argon2id hash is full of
+   `$`, `docker compose` interpolates `$` in `.env`, and **quoting does not
+   stop it**. Measured against the real binary — the raw hash and the quoted
+   hash both arrive inside the container as `=19=65536,t=3,p=4`, so every
+   login fails in a way that looks like a wrong password rather than a mangled
+   file.
+
+   **Or sidestep the escaping entirely** — put the raw hash in a secret file,
+   which is how every other secret here is delivered and which no interpolation
+   can touch:
+
+   ```bash
+   docker compose run --rm qd-web qd hash-password --json | jq -r .hash      > secrets/admin_password_hash
+   chmod 600 secrets/admin_password_hash
+   ```
+
+   `qd-web` reads `QD_ADMIN_PASSWORD_HASH_FILE` (already wired to
+   `/run/secrets/admin_password_hash` in the compose file) whenever the
+   environment variable is absent or mangled. Either route works; the file is
+   one fewer thing to get wrong.
+
+   Since 2026-08-04 a hash that does not start with `$argon2` is refused at
+   startup with a log line naming the variable and the fix, instead of being
+   passed to the verifier where it is indistinguishable from a wrong password.
+   That was the whole difficulty with this failure: it looked like the operator,
+   not the config.
+
+5. **Start the database first and let it initialise the schema.**
+
+   ```bash
+   docker compose up -d qd-db
+   ```
+
+   Wait for `healthy`, then confirm the hypertables exist:
+
+   ```bash
+   docker compose exec qd-db psql -U qd -d quantdesk -c "\dt"
+   ```
+
+6. **Start the rest.**
+
+   ```bash
+   docker compose up -d qd-collector qd-engine qd-web
+   ```
+
+7. **Reach the dashboard over Tailscale** at `http://100.x.y.z:8090`.
+   Do not port-forward it. Nothing about a trading control plane belongs on
+   the public internet.
+
+   Sign in with `admin` and the password you hashed in step 4. Roles come from
+   env vars — `QD_ADMIN_PASSWORD_HASH`, and optionally
+   `QD_OPERATOR_PASSWORD_HASH` / `QD_VIEWER_PASSWORD_HASH`. **Halt works for
+   every role**, including `viewer`: stopping is never gated.
+
+   The dashboard cannot arm live trading and has no route that could — the
+   confirmation phrase is typed at a terminal or not at all.
+
+8. **Backfill history** — ⚠ **not possible from Kraken's API.** Measured
+   2026-07-28: Kraken retains only ~720 intervals per timeframe, so the API
+   offers 30 days at 1h, ~4 months at 4h, ~2 years at 1d. Deep history comes
+   from Kraken's bulk OHLCVT CSVs instead — a **manual Google Drive download**,
+   see ARCHITECTURE.md §7B — imported with `qd import-history`. Until that lands
+   the collector accumulates forward from first run, which is the supported
+   fallback and needs no action.
+
+---
+
+## Daily operation
+
+**Check status**
+
+```bash
+docker compose ps && docker compose logs --tail 50 qd-engine
+```
+
+**Stop trading immediately** — three independent paths, all equivalent, use
+whichever you can reach fastest:
+
+```bash
+docker compose exec qd-engine touch /app/state/KILL
+```
+
+- The dashboard's red **HALT** button (available to every role, including `viewer`).
+- Telegram `/halt` to your existing bot.
+
+The kill switch blocks *all* orders including exits, because it means "I do not
+trust this system right now." To close positions instead, use `flatten_all`,
+which is a different command on purpose.
+
+**Resume**
+
+```bash
+docker compose exec qd-engine rm -f /app/state/KILL
+```
+
+**Run a backtest**
+
+```bash
+docker compose --profile batch run --rm qd-worker qd backtest --strategy ema_cross --symbol BTC/USD --timeframe 4h
+```
+
+**Run the honest evaluation** (this, not the above, is what a decision uses):
+
+```bash
+docker compose --profile batch run --rm qd-worker qd walkforward --strategy ema_cross --symbol BTC/USD --folds 5 --montecarlo
+```
+
+**Check the promotion gate**
+
+```bash
+docker compose --profile batch run --rm qd-worker qd promotion-status
+```
+
+---
+
+## Going live (Phase 6 — the arming half exists, the broker does not)
+
+**Nothing can trade live today**, and the refusal is loud rather than silent:
+`qd-engine` **exits with code 2 if started with `QD_MODE=live`**, because no
+`CcxtBroker` exists in this build and paper-trading while you believe otherwise
+is strictly worse than not starting. What *is* built is the arming ceremony —
+`qd arm-live`, renewal, disarm, and the human-rooted invariant.
+
+**You arm once. After that the system keeps itself armed and tells you when
+something changed.** Full design in ARCHITECTURE.md §8.4.
+
+1. `qd promotion-status --strategy X` must report `passed: true`. It currently
+   reports that nothing has ever been evaluated, because the nightly evaluator
+   is Phase 5 — so arming today requires `--force`, which is permanently
+   audited and notified.
+2. Set `QD_MODE=live`, recreate `qd-engine` — **only once a live broker exists.**
+3. `qd arm-live --strategy X --symbol BTC/USD --max-notional 250`
+   — prints the whole envelope, then requires you to type
+   `ARM LIVE <account> <max-notional> USD` exactly. **It refuses without an
+   interactive terminal**: there is no flag, environment variable or stdin path
+   that supplies the phrase, so no script or scheduler can arm anything. Run it
+   yourself:
+
+   ```bash
+   docker compose run --rm qd-engine qd arm-live --strategy X --symbol BTC/USD --max-notional 250
+   ```
+
+4. Verify with `qd arming-status`, which also recomputes the envelope hash and
+   tells you whether renewal will continue or a fresh tap is coming.
+
+From then on the engine renews the arming before it expires, indefinitely, for
+as long as nothing meaningful changes. **You are not expected to keep track of
+it.** What breaks the renewal and asks you again:
+
+- You change a cap, a symbol, a strategy, risk config, or any line of strategy
+  code (all folded into `envelope_hash`).
+- Total drawdown breaches its limit, or the promotion gate regresses.
+
+Transient faults — exchange unreachable, stale market data, a reconciliation
+mismatch — disarm too, but the engine may re-arm itself once it has verified the
+cause is resolved and the envelope is unchanged. It notifies either way.
+
+**`qd disarm` at any time**, and the red **HALT** button always works. Stopping
+is never gated, and disarming any link kills every renewal descended from it.
+
+> **What Claude will not do:** originate the first arm, or re-arm after a
+> drawdown / gate-regression / config-change disarm. Those are yours. Everything
+> else about arming — renewing, disarming, halting, flattening, re-arming after
+> a verified transient fault — is automatic.
+
+---
+
+## Maintenance
+
+| Cadence | Task | Command |
+|---|---|---|
+| Daily | Automatic `pg_dump -Fc` to `/volume1/docker/quantdesk/backups` | ✅ `qd-backup` sidecar, 03:30 CT; on-demand: `docker exec qd-backup sh /backup-loop.sh backup` |
+| Daily | Read the morning summary notification | ⛔ the outbox sender is a stub that logs |
+| Weekly | **Verify a backup restores** into a scratch cluster | ✅ `qd-backup` drills Sundays after the dump; on-demand: `docker exec qd-backup sh /backup-loop.sh drill` |
+| Weekly | Review `risk_events` for unresolved rows | `qd status` |
+| Monthly | Re-check the exchange fee tier; update `.env` if it changed | — |
+| Quarterly | Walk-forward re-fit; parameters may only change at a re-fit boundary | `qd walkforward --strategy X` |
+| On any code change to a live strategy | The promotion clock **resets** | enforced via `code_git_sha` |
+
+**An unverified backup is a rumour**, so every backup carries its receipt:
+`backups/latest.json` records size, sha256 and row counts at dump time, the
+Sunday drill restores the newest dump into a scratch cluster *inside*
+`qd-backup` (never into the RAM-capped `qd-db`) and compares structure and
+counts against that receipt, and `backups/drill-latest.json` records the
+verdict. A failed **or stale** backup turns `qd-backup` unhealthy, which
+Mission Control surfaces. Retention: 14 daily dumps, 8 Sunday (`-weekly`)
+dumps. Dumps never leave the NAS yet — off-box replication is open debt.
+
+To restore for real: stop the stack, recreate `qd-db` with an empty
+`./data/pgdata`, then `CREATE EXTENSION timescaledb; SELECT
+timescaledb_pre_restore();`, `pg_restore -d quantdesk <dump>`, `SELECT
+timescaledb_post_restore();` — the same sequence the drill exercises weekly.
+
+### Log locations
+
+- Container logs: `docker compose logs <service>` (capped 10 MB × 3).
+- Structured app logs: `/volume1/docker/quantdesk/logs/`.
+- The authoritative record of *what happened and why* is not a log file — it is
+  the `signals`, `risk_events`, and `audit_log` tables. Query those first.
+
+### When a strategy goes quiet
+
+That is usually correct behaviour, not a bug. Ask the database:
+
+```sql
+SELECT reject_code, count(*), max(ts)
+FROM signals WHERE strategy = 'ema_cross' AND NOT accepted
+  AND ts > now() - interval '7 days'
+GROUP BY 1 ORDER BY 2 DESC;
+```
+
+`EDGE_BELOW_FEES` in that list is the system working as designed.
+
+---
+
+## Development
+
+```bash
+python -m venv .venv && .venv/Scripts/python -m pip install -e ".[dev,ml]"
+```
+
+```bash
+python -m pytest tests/ -q
+```
+
+### Database tests
+
+`tests/test_store.py` needs a real Postgres and **skips without one**. There is
+no in-memory substitute: what it tests is `ON CONFLICT` semantics,
+`FOR UPDATE SKIP LOCKED`, CHECK constraints, a recursive CTE and a plpgsql
+function. A fake database would only test the fake.
+
+Set `QD_TEST_DSN` to run them:
+
+```bash
+QD_TEST_DSN=postgresql://qd:qdtest@127.0.0.1:5432/quantdesk python -m pytest tests/test_store.py -q
+```
+
+The NAS blocks both inbound Postgres ports and SSH forwarding, so on that host
+the tests run in a container beside the database — which also matches how the
+stack actually runs:
+
+```bash
+docker run -d --name qdtest -p 55433:5432 -e POSTGRES_USER=qd -e POSTGRES_PASSWORD=qdtest -e POSTGRES_DB=quantdesk timescale/timescaledb:2.17.2-pg16
+```
+
+```bash
+docker run --rm --network host -v /tmp/qdsrc:/src -w /src -e QD_TEST_DSN=postgresql://qd:qdtest@127.0.0.1:55433/quantdesk python:3.12-slim sh -c "pip install -q asyncpg pytest pytest-asyncio numpy && python -m pytest tests/test_store.py -q -p no:cacheprovider"
+```
+
+**Recreate the container to pick up a changed `schema.sql`.** The tests isolate
+with TRUNCATE rather than DROP SCHEMA, because dropping deadlocks against
+TimescaleDB's background workers. `schema_version` records the hash the database
+was built from and `bootstrap()` warns on drift.
+
+Two tests are load-bearing. If either fails, **stop trusting every performance
+number in the project until it passes again**:
+
+- `test_indicators_are_causal` — appending future data must not change history.
+- `test_no_lookahead_in_the_engine` — a strategy's view physically ends at the
+  current bar.
+
+### Adding a strategy
+
+1. Subclass `Strategy` in `ct/strategies/`, set `name`, `family`, `DEFAULTS`,
+   `warmup`, implement `on_bar`. Emit `Signal`s — never orders, never sizes.
+2. Register it in `ct/strategies/__init__.py`.
+3. Walk-forward it. Report the **deflated** Sharpe with the **honest** trial
+   count — every variant you evaluated, not just the one you kept.
+4. It starts `enabled: false`. Paper for 90 days. Then the gate decides.
+
+### Known limitations
+
+- ~~**The backtester is O(n²) in strategy indicators.**~~ **Fixed 2026-07-28**
+  (ARCHITECTURE.md §7.1). Indicators are computed once per run and each bar gets
+  a view truncated at that bar — legal because every indicator is causal, which
+  is now asserted for all 26 indicator outputs. The 6,000-bar × 18-parameter ×
+  5-fold walk-forward went from *not finishing in ten minutes* to **6.7 s**.
+  All seven strategies emit byte-identical signals before and after.
+- **Protective exits ignore the participation cap** — a stop always fills in
+  full at the stop price regardless of the bar's volume. Optimistic, and it
+  matters most for large positions in thin bars.
+- **Exit-reason labelling is imprecise:** an exit is reported `trail` whenever
+  `trail_atr_mult` is set, even if the trail never ratcheted above the original
+  stop. Don't read the `stop` vs `trail` split as meaningful yet.
+- **Warm-up bars are still counted** in `n_periods`, `exposure` and the return
+  series, which biases Sharpe and CAGR (S2-3).
+- Cross-exchange and funding-rate arbitrage are **monitor-only**: data is
+  recorded, no executor exists, and both are likely closed to US persons anyway.
+- `PaperBroker`'s queue model is an approximation. It is deliberately
+  pessimistic (you are last in the queue), but it is not a matching engine, and
+  it does **not** reserve funds at placement the way a real venue does.

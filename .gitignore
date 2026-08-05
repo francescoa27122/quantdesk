@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+# Runtime directories, ANCHORED with a leading slash. Unanchored `data/`
+# matches at any depth and silently excluded the entire ct/data package —
+# seven modules including the collector — from the first commit.
+/secrets/
+/data/
+/logs/
+/reports/
+/models/
+/backups/
+demo_tmp.py
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/

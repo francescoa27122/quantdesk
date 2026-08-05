@@ -1,0 +1,158 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}Positions · QuantDesk{% endblock %}
+
+{% block content %}
+<div class="pagehead">
+  <div>
+    <h1>Positions</h1>
+    <p class="pagehead-sub">{{ lede }}</p>
+  </div>
+  <div class="pagehead-actions">
+    <button class="btn btn--ghost btn--sm" data-control="flatten_all"
+            data-confirm="Request liquidation of every position?"
+            data-typed="FLATTEN"
+            title="Queues a flatten request. The engine submits reduce-only market closes on its next cycle and clears the request once the book is flat.">Flatten all</button>
+  </div>
+</div>
+
+<div class="grid grid--two">
+
+  {% call m.card('Open books', 'One row per (strategy, symbol)') %}
+    {% include "partials/positions.html" %}
+  {% endcall %}
+
+  {% call m.card('Exposure by symbol', 'What the exchange actually holds — what the caps aggregate') %}
+    {% if exposure %}
+    <table class="tbl">
+      <thead><tr><th>Symbol</th><th class="r">Net qty</th><th class="r">Gross</th>
+        <th class="r">Books</th><th class="r">Realised</th><th class="r">Fees</th></tr></thead>
+      <tbody>
+      {% for e in exposure %}
+        <tr>
+          <td class="num">{{ e.symbol }}</td>
+          <td class="r num tone-{{ e.net_qty|tone }}">{{ e.net_qty|qty }}</td>
+          <td class="r num">{{ e.gross_qty|qty }}</td>
+          <td class="r num">{{ e.open_books }}</td>
+          <td class="r num tone-{{ e.realized_pnl|tone }}">{{ e.realized_pnl|signed }}</td>
+          <td class="r num">{{ e.fees_paid|money }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    <p class="tbl-note">Two strategies long the same symbol are two books but one
+    exposure. Risk caps read this view; a close from one book cannot flatten the other.</p>
+    {% else %}
+      {{ m.empty('No exposure', 'Nothing held on any symbol.') }}
+    {% endif %}
+  {% endcall %}
+
+  {% call m.card('In flight', 'Orders the engine believes are live at the venue') %}
+    {% if open_orders %}
+    <table class="tbl tbl--hover">
+      <thead><tr><th>Order</th><th>Side</th><th class="r">Qty</th><th class="r">Filled</th>
+        <th class="r">Limit</th><th>Status</th><th class="r">Age</th></tr></thead>
+      <tbody>
+      {% for o in open_orders %}
+        <tr>
+          <td><span class="book">{{ o.symbol }}</span><span class="book-strat">{{ o.strategy }}</span>
+              <code class="oid" title="{{ o.client_order_id }}">{{ o.client_order_id[:8] }}</code></td>
+          <td><span class="side side--{{ o.side }}">{{ o.side|upper }}</span>
+              <i class="dim">{{ o.type }}{% if o.reduce_only %} · reduce{% endif %}</i></td>
+          <td class="r num">{{ o.qty|qty }}</td>
+          <td class="r num">{{ o.filled_qty|qty }}</td>
+          <td class="r num">{{ o.limit_price|money if o.limit_price else '—' }}</td>
+          <td>{{ m.badge(o.status, 'warn' if o.status == 'partial' else 'neutral') }}</td>
+          <td class="r dim">{{ m.when(o.created_at) }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+      {{ m.empty('Nothing in flight', 'Every order has reached a terminal state.') }}
+    {% endif %}
+  {% endcall %}
+
+  {% call m.card('Execution quality', 'Last 30 days — the maker-first edge, measured') %}
+    <div class="exec">
+      {{ charts.donut(execution.maker_ratio, label='maker ratio')|safe }}
+      <dl class="kvs kvs--tight">
+        {{ m.kv('Fills', execution.fills|compact) }}
+        {{ m.kv('Notional', execution.notional|money(0)) }}
+        {{ m.kv('Fees', execution.fees|money) }}
+        {{ m.kv('Effective cost',
+                (execution.fees / execution.notional)|bps if execution.notional else '—',
+                title='Fees as a fraction of traded notional. Kraken $0 tier: 40 bps taker, 25 bps maker.') }}
+      </dl>
+    </div>
+  {% endcall %}
+
+  <section class="card card--wide">
+    <header class="card-head">
+      <div><h2 class="card-title">Recent orders</h2>
+        <p class="card-sub">Newest first, terminal and live</p></div>
+    </header>
+    <div class="card-body card-body--flush">
+      {% if orders %}
+      <table class="tbl tbl--hover tbl--dense">
+        <thead><tr><th>When</th><th>Book</th><th>Side</th><th class="r">Qty</th>
+          <th class="r">Filled</th><th class="r">Avg price</th><th class="r">Fee</th>
+          <th>Status</th></tr></thead>
+        <tbody>
+        {% for o in orders %}
+          <tr>
+            <td class="dim">{{ m.when(o.created_at) }}</td>
+            <td><span class="book">{{ o.symbol }}</span><span class="book-strat">{{ o.strategy }}</span></td>
+            <td><span class="side side--{{ o.side }}">{{ o.side|upper }}</span></td>
+            <td class="r num">{{ o.qty|qty }}</td>
+            <td class="r num">{{ o.filled_qty|qty }}</td>
+            <td class="r num">{{ o.avg_fill_price|money if o.avg_fill_price else '—' }}</td>
+            <td class="r num">{{ o.fee_paid|money }}</td>
+            <td>{{ m.badge(o.status,
+                     'ok' if o.status == 'filled' else
+                     ('danger' if o.status in ('rejected', 'expired') else 'neutral'),
+                     o.error_code or '') }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+        {{ m.empty('No orders', 'Nothing has been submitted on this account.') }}
+      {% endif %}
+    </div>
+  </section>
+
+  <section class="card card--wide">
+    <header class="card-head">
+      <div><h2 class="card-title">Fills</h2>
+        <p class="card-sub">The ledger. <code>orders.filled_qty</code> is derived from these, never the other way round.</p></div>
+    </header>
+    <div class="card-body card-body--flush">
+      {% if fills %}
+      <table class="tbl tbl--hover tbl--dense">
+        <thead><tr><th>When</th><th>Book</th><th>Side</th><th class="r">Qty</th>
+          <th class="r">Price</th><th class="r">Fee</th><th>Liquidity</th></tr></thead>
+        <tbody>
+        {% for f in fills %}
+          <tr>
+            <td class="dim">{{ m.when(f.ts) }}</td>
+            <td><span class="book">{{ f.symbol }}</span><span class="book-strat">{{ f.strategy }}</span></td>
+            <td><span class="side side--{{ f.side }}">{{ f.side|upper }}</span></td>
+            <td class="r num">{{ f.qty|qty }}</td>
+            <td class="r num">{{ f.price|money }}</td>
+            <td class="r num">{{ f.fee|money(4) }}</td>
+            <td>{% if f.is_maker is none %}<span class="dim">unknown</span>
+                {% elif f.is_maker %}{{ m.badge('maker', 'ok', '25 bps at the $0 tier') }}
+                {% else %}{{ m.badge('taker', 'warn', '40 bps at the $0 tier') }}{% endif %}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+        {{ m.empty('No fills', 'Nothing has executed yet.') }}
+      {% endif %}
+    </div>
+  </section>
+
+</div>
+{% endblock %}

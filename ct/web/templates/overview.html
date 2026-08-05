@@ -1,0 +1,247 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}Overview · QuantDesk{% endblock %}
+
+{% block content %}
+
+{% if risk_events %}
+<div class="alert alert--danger" role="alert">
+  <b>{{ risk_events|length }} unresolved risk event{{ 's' if risk_events|length != 1 }}.</b>
+  {{ risk_events[0].code }} — {{ risk_events[0].detail|truncate(120) }}
+  <a class="alert-link" href="/risk">Review</a>
+</div>
+{% endif %}
+
+{% if not perf.has_data %}
+<div class="alert alert--info" role="status">
+  <b>No equity marks recorded yet.</b>
+  The engine writes one every cycle once it has booted and reconciled. Until then
+  every figure below is empty because nothing has happened — not because anything failed.
+</div>
+{% endif %}
+
+<div class="kpis">
+  {{ m.stat('Equity', perf.equity|money if perf.has_data else '—',
+            'flat', 'as of ' ~ (perf.ts|ago if perf.has_data else 'never'),
+            'Latest mark-to-market value written by the engine') }}
+  {{ m.stat('24 hours', perf.day|signed_pct, perf.day|tone,
+            'vs 24h ago', 'Change against the newest mark at or before 24h ago') }}
+  {{ m.stat('7 days', perf.week|signed_pct, perf.week|tone, 'vs 7d ago') }}
+  {{ m.stat('Since first mark', perf.since_start|signed_pct, perf.since_start|tone,
+            perf.marks|compact ~ ' marks') }}
+  {{ m.stat('Max drawdown', perf.max_drawdown|pct if perf.has_data else '—',
+            'down' if perf.max_drawdown else 'flat',
+            'peak ' ~ (perf.peak|money if perf.has_data else '—'),
+            'Worst drawdown ever recorded on this account') }}
+  {{ m.stat('Open books', positions|length, 'flat',
+            exposure|length ~ ' symbol' ~ ('s' if exposure|length != 1 else ''),
+            'One book per (strategy, symbol) — two strategies long BTC are two books') }}
+</div>
+
+<div class="grid grid--main">
+
+  <section class="card card--chart" id="equity-card">
+    <header class="card-head">
+      <div>
+        <h2 class="card-title">Equity</h2>
+        <p class="card-sub">Mark-to-market, drawdown shaded beneath</p>
+      </div>
+      <div class="card-actions seg" role="group" aria-label="Range">
+        {% for h, label in [(24, '24h'), (168, '7d'), (720, '30d'), (8760, '1y')] %}
+        <a class="seg-btn{% if hours == h %} is-active{% endif %}" href="/overview?hours={{ h }}">{{ label }}</a>
+        {% endfor %}
+      </div>
+    </header>
+    <div class="card-body card-body--flush" id="equity-body"
+         data-refresh="/partials/equity?hours={{ hours }}" data-every="60">
+      {% include "partials/equity.html" %}
+    </div>
+  </section>
+
+  <section class="card" id="risk-budget">
+    <header class="card-head">
+      <div>
+        <h2 class="card-title">Risk budget</h2>
+        <p class="card-sub">Caps bind at approval, not continuously</p>
+      </div>
+      <a class="card-link" href="/risk">Gates</a>
+    </header>
+    <div class="card-body">
+      {% set gross = (latest.gross_exposure|float) if latest else 0.0 %}
+      {% set dd = (latest.drawdown|float) if latest else 0.0 %}
+      <div class="budget">
+        <div class="budget-row">
+          <span class="budget-label">Gross exposure</span>
+          {{ charts.meter(gross, limits.max_gross_exposure, label='gross exposure')|safe }}
+          <span class="budget-value num">{{ gross|pct }} <i>/ {{ limits.max_gross_exposure|pct(0) }}</i></span>
+        </div>
+        <div class="budget-row">
+          <span class="budget-label">Drawdown</span>
+          {{ charts.meter(dd, limits.max_total_drawdown, label='drawdown')|safe }}
+          <span class="budget-value num">{{ dd|pct }} <i>/ {{ limits.max_total_drawdown|pct(0) }}</i></span>
+        </div>
+        <div class="budget-row">
+          <span class="budget-label">Open books</span>
+          {{ charts.meter(positions|length, limits.max_open_positions, label='open books')|safe }}
+          <span class="budget-value num">{{ positions|length }} <i>/ {{ limits.max_open_positions }}</i></span>
+        </div>
+      </div>
+
+      <dl class="kvs">
+        {{ m.kv('Cash', latest.cash|money if latest else '—') }}
+        {{ m.kv('In positions', latest.positions_value|money if latest else '—') }}
+        {{ m.kv('Min edge vs fees', limits.min_edge_bps ~ ' bps',
+                title='A signal whose expected edge is below this is rejected — the fee gate from ARCHITECTURE §0.1') }}
+        {{ m.kv('Leverage', limits.max_leverage ~ '×', title='Spot only') }}
+      </dl>
+
+      {% if not has_config %}
+      <p class="note">No <code>risk_config</code> row for this account — these are
+      the <code>RiskLimits</code> defaults the engine falls back to.</p>
+      {% endif %}
+    </div>
+  </section>
+
+  <section class="card" id="positions-card">
+    <header class="card-head">
+      <div>
+        <h2 class="card-title">Open positions</h2>
+        <p class="card-sub">One row per book</p>
+      </div>
+      <a class="card-link" href="/positions">All positions</a>
+    </header>
+    <div class="card-body card-body--flush" data-refresh="/partials/positions" data-every="20">
+      {% include "partials/positions.html" %}
+    </div>
+  </section>
+
+  <section class="card" id="signals-card">
+    <header class="card-head">
+      <div>
+        <h2 class="card-title">Signals</h2>
+        <p class="card-sub">Including the ones risk refused — that difference is the point</p>
+      </div>
+      <a class="card-link" href="/strategies">Strategies</a>
+    </header>
+    <div class="card-body card-body--flush" data-refresh="/partials/signals" data-every="20">
+      {% include "partials/signals.html" %}
+    </div>
+  </section>
+
+  <section class="card">
+    <header class="card-head">
+      <div>
+        <h2 class="card-title">Strategies</h2>
+        <p class="card-sub">Derived from rows actually written, not from a roster</p>
+      </div>
+    </header>
+    <div class="card-body card-body--flush">
+      {% if strategies %}
+      <table class="tbl">
+        <thead><tr>
+          <th>Strategy</th><th class="r">Signals</th><th class="r">Accepted</th>
+          <th class="r">Fills</th><th class="r">Fees</th><th class="r">Books</th>
+        </tr></thead>
+        <tbody>
+        {% for s in strategies %}
+          <tr>
+            <td><a class="cell-link" href="/trades?strategy={{ s.strategy }}">{{ s.strategy }}</a></td>
+            <td class="r num">{{ s.signals|compact }}</td>
+            <td class="r num">{{ s.accepted|compact }}
+              {% if s.signals %}<i class="dim">{{ (s.accepted / s.signals)|pct(0) }}</i>{% endif %}</td>
+            <td class="r num">{{ s.fills|compact }}</td>
+            <td class="r num">{{ s.fees|money }}</td>
+            <td class="r num">{{ s.open_books }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+        {{ m.empty('No strategy has emitted a signal yet',
+                   'Signals appear here the moment the engine evaluates one — accepted or rejected.') }}
+      {% endif %}
+    </div>
+  </section>
+
+  <section class="card">
+    <header class="card-head">
+      <div>
+        <h2 class="card-title">Execution quality</h2>
+        <p class="card-sub">30 days</p>
+      </div>
+    </header>
+    <div class="card-body">
+      <div class="exec">
+        {{ charts.donut(execution.maker_ratio, label='maker ratio')|safe }}
+        <div class="exec-text">
+          <b>Maker ratio</b>
+          <p>The direct measure of the largest claimed edge in this project —
+             15 bps a side, larger than most published retail edges.
+             {% if execution.maker_ratio is none %}
+             No fills recorded yet, which is <i>not</i> the same as 0%.
+             {% endif %}</p>
+        </div>
+      </div>
+      <dl class="kvs">
+        {{ m.kv('Fills', execution.fills|compact) }}
+        {{ m.kv('Notional', execution.notional|money(0)) }}
+        {{ m.kv('Fees paid', execution.fees|money) }}
+        {{ m.kv('Fees / notional',
+                (execution.fees / execution.notional)|bps if execution.notional else '—') }}
+      </dl>
+    </div>
+  </section>
+
+  <section class="card">
+    <header class="card-head">
+      <div>
+        <h2 class="card-title">Why risk said no</h2>
+        <p class="card-sub">Last 7 days</p>
+      </div>
+    </header>
+    <div class="card-body">
+      {% if rejections %}
+        {{ charts.hbars(rejection_bars)|safe }}
+        {% if rejections|selectattr('code', 'equalto', 'EDGE_BELOW_FEES')|list %}
+        <p class="note"><code>EDGE_BELOW_FEES</code> at the top of this list is the
+        system working as designed, not a fault.</p>
+        {% endif %}
+      {% else %}
+        {{ m.empty('No signal has been rejected', 'Either nothing fired, or everything passed.') }}
+      {% endif %}
+    </div>
+  </section>
+
+  <section class="card">
+    <header class="card-head">
+      <div>
+        <h2 class="card-title">Market data</h2>
+        <p class="card-sub">Age in bars is what the risk gate reads</p>
+      </div>
+      <a class="card-link" href="/system">System</a>
+    </header>
+    <div class="card-body card-body--flush">
+      {% if coverage %}
+      <table class="tbl">
+        <thead><tr><th>Symbol</th><th>TF</th><th class="r">Bars</th><th class="r">Age</th><th></th></tr></thead>
+        <tbody>
+        {% for c in coverage %}
+          {% set state = freshness(c.age_s, c.timeframe) %}
+          <tr>
+            <td class="num">{{ c.symbol }}</td>
+            <td class="dim">{{ c.timeframe }}</td>
+            <td class="r num">{{ c.bars|compact }}</td>
+            <td class="r num">{{ timedelta_words(c.age_s) }}</td>
+            <td class="r">{{ m.badge(state, 'ok' if state == 'ok' else ('warn' if state == 'slow' else 'danger')) }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+        {{ m.empty('No candles stored', 'Start qd-collector, or import history with qd import-history.') }}
+      {% endif %}
+    </div>
+  </section>
+
+</div>
+{% endblock %}

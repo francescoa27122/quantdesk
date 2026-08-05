@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>{{ code }} · QuantDesk</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+</head>
+<body class="body--auth">
+<main class="auth">
+  <div class="auth-box auth-box--error">
+    <span class="err-code num">{{ code }}</span>
+    <h1 class="auth-title">
+      {%- if code == 503 -%}Database unavailable
+      {%- elif code == 403 -%}Not permitted
+      {%- elif code == 404 -%}Nothing here
+      {%- else -%}Something went wrong{%- endif -%}
+    </h1>
+    <p class="auth-sub">{{ detail }}</p>
+    {% if code == 503 %}
+    <p class="auth-note">
+      Every number on this dashboard is read from Postgres. Rather than render an
+      empty page that looks like a calm, flat account, it refuses and says why.
+    </p>
+    {% endif %}
+    <a class="btn btn--ghost" href="/">Back to Home</a>
+  </div>
+</main>
+</body>
+</html>

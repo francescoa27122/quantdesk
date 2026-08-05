@@ -1,0 +1,45 @@
+name: Bug report
+description: Something behaves incorrectly
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **If this is a security problem, stop.** Do not file it here — use
+        private reporting (Security → Report a vulnerability). See SECURITY.md.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: The actual behaviour, and what you expected instead.
+    validations: { required: true }
+  - type: textarea
+    id: repro
+    attributes:
+      label: Smallest reproduction
+      description: Commands, config, or a failing test. Smaller is better.
+    validations: { required: true }
+  - type: textarea
+    id: output
+    attributes:
+      label: Real output
+      description: Logs or a traceback. Paste it verbatim — do not summarise.
+      render: shell
+  - type: input
+    id: commit
+    attributes:
+      label: Commit tested
+    validations: { required: true }
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Mode
+      options: ["paper", "live", "backtest only", "not running the engine"]
+    validations: { required: true }
+  - type: checkboxes
+    id: secrets
+    attributes:
+      label: Before you submit
+      options:
+        - label: I have removed API keys, account balances, and personal data from the output above
+          required: true

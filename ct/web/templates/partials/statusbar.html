@@ -1,0 +1,55 @@
+{# The one thing on screen at all times. It answers, in order: is the engine
+   alive, may it trade, is anything stopping it, and how old is what I am
+   looking at. Everything else on the page is detail. #}
+<header class="status" id="statusbar" data-refresh="/partials/statusbar" data-every="15">
+  <div class="status-left">
+    <span class="live" data-live title="Event stream">
+      <span class="live-dot"></span><span class="live-text">live</span>
+    </span>
+
+    {% if engine.stale %}
+      <span class="pill pill--danger" title="{% if engine.seen %}Newest heartbeat is {{ timedelta_words(engine.age_s) }} old{% else %}No heartbeat has ever been recorded{% endif %}">
+        ENGINE {{ 'SILENT' if engine.seen else 'NEVER SEEN' }}
+      </span>
+    {% elif engine.kill %}
+      <span class="pill pill--danger" title="Kill switch file present — all orders blocked, exits included">KILL SWITCH</span>
+    {% elif engine.halted %}
+      <span class="pill pill--warn" title="{{ engine.halt_reason or 'halted' }}">HALTED</span>
+    {% elif engine.may_open %}
+      <span class="pill pill--ok" title="Reconciled, unhalted, armed">TRADING</span>
+    {% else %}
+      <span class="pill pill--warn" title="Not opening new positions">NOT OPENING</span>
+    {% endif %}
+
+    <span class="pill pill--{{ 'live' if mode == 'live' else 'paper' }}"
+          title="{% if mode == 'live' %}QD_MODE=live{% else %}Paper: no real orders can be placed{% endif %}">{{ mode|upper }}</span>
+
+    {% if arming %}
+      <span class="pill pill--armed" title="Arming id {{ arming.id }} ({{ arming.origin }}), expires {{ arming.expires_at|stamp }}">
+        ARMED · {{ timedelta_words(arming.expires_in_s) }}
+      </span>
+    {% elif mode == 'live' %}
+      <span class="pill pill--warn" title="QD_MODE=live but no valid arming row — no orders will be sent">NOT ARMED</span>
+    {% endif %}
+
+    {% if engine.paused_strategies %}
+      <span class="pill pill--warn" title="{{ engine.paused_strategies|join(', ') }}">
+        {{ engine.paused_strategies|length }} PAUSED
+      </span>
+    {% endif %}
+  </div>
+
+  <div class="status-right">
+    <span class="status-meta" title="Age of the newest engine heartbeat. The engine beats every ~5 minutes.">
+      engine <b class="num">{{ timedelta_words(engine.age_s) if engine.seen else 'never' }}</b>
+    </span>
+    <span class="status-meta" title="Age of the newest collector heartbeat">
+      feed <b class="num">{{ timedelta_words(engine.collector_age_s) if engine.collector_seen else 'never' }}</b>
+    </span>
+    <span class="status-meta clock num" data-clock title="UTC">--:--:--</span>
+
+    <button class="btn btn--danger btn--sm" data-control="halt"
+            data-confirm="Halt the engine? New positions stop; existing stops and exits keep working."
+            title="Stop opening. Available to every role — stopping is never gated.">HALT</button>
+  </div>
+</header>

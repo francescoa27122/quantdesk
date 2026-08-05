@@ -1,0 +1,327 @@
+# QuantDesk — DXP2800 stack.
+# Deploy target on the NAS: /volume1/docker/quantdesk
+#
+# RAM budget (see ARCHITECTURE.md §0.2): db 1G + engine 512M + collector 320M
+# + web 320M = ~2.2G always-on. `worker` is profile-gated and adds 1G only when
+# you explicitly run a backtest. Do NOT remove the mem_limits: the NAS has
+# ~2.0G free when the Minecraft server is up, and an unbounded Postgres will
+# happily take all of it and OOM node-1.
+
+name: quantdesk
+
+x-common: &common
+  restart: unless-stopped
+  networks: [qd]
+  environment:
+    TZ: America/Chicago
+    QD_ENV: ${QD_ENV:-prod}
+    QD_DB_DSN: postgresql://qd:${POSTGRES_PASSWORD}@qd-db:5432/quantdesk
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "3" }
+
+services:
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # TimescaleDB — the only stateful service. No published port: reachable
+  # only from the internal `qd` network.
+  # ─────────────────────────────────────────────────────────────────────────
+  qd-db:
+    image: timescale/timescaledb:2.17.2-pg16
+    container_name: qd-db
+    restart: unless-stopped
+    networks: [qd]
+    environment:
+      TZ: America/Chicago
+      POSTGRES_DB: quantdesk
+      POSTGRES_USER: qd
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      # Tuned for a 4-core N100 with ~1G to spend. Do not raise shared_buffers
+      # without raising mem_limit first.
+      TIMESCALEDB_TELEMETRY: "off"
+    command:
+      - postgres
+      - -c
+      - shared_buffers=256MB
+      - -c
+      - work_mem=8MB
+      - -c
+      - maintenance_work_mem=128MB
+      - -c
+      - effective_cache_size=768MB
+      - -c
+      - max_connections=40
+      - -c
+      - wal_compression=on
+      - -c
+      - timescaledb.max_background_workers=4
+    volumes:
+      - ./data/pgdata:/var/lib/postgresql/data
+      - ./db:/docker-entrypoint-initdb.d:ro
+    mem_limit: 1024m
+    # S3-2 (closed 2026-07-30): always-on cpus now sum to 4.0 on the 4-core
+    # N100 (db 1.5 + engine 1.0 + collector 0.75 + web 0.5 + backup 0.25).
+    # The old sum was 6.0 — legal for limits, but during a backfill the db
+    # and collector could lawfully starve the engine's order path.
+    # qd-worker (profile-gated, 1.5) is an accepted, deliberate exception.
+    cpus: 1.5
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U qd -d quantdesk"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Market data ingest. Isolated because websocket reconnects and multi-hour
+  # backfills must never be able to disturb the order path.
+  # No exchange *private* credentials here — public endpoints only.
+  # ─────────────────────────────────────────────────────────────────────────
+  qd-collector:
+    <<: *common
+    # `target` is REQUIRED. Without it Docker builds the LAST stage in the
+    # Dockerfile, which is `ml` — so every trading container silently
+    # shipped LightGBM, pandas, scikit-learn, scipy, hmmlearn, statsmodels
+    # and arch. That is the opposite of the stated design: the ML layer is
+    # for qd-worker alone, precisely so an ML dependency cannot break
+    # execution. Measured: 745 MB built as `ml`.
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: base
+    container_name: qd-collector
+    command: ["python", "-m", "ct.data.collector"]
+    depends_on:
+      qd-db: { condition: service_healthy }
+    volumes:
+      - ./config:/app/config:ro
+      - ./logs:/app/logs
+    mem_limit: 320m
+    cpus: 0.75
+    healthcheck:
+      test: ["CMD", "python", "-m", "ct.data.collector", "--healthcheck"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # THE ONLY WRITER of orders/fills/positions, and the ONLY container that
+  # holds exchange trading credentials or the Telegram token.
+  # Merging strategy+risk+execution is deliberate — see ARCHITECTURE.md §1.
+  # ─────────────────────────────────────────────────────────────────────────
+  qd-engine:
+    <<: *common
+    # `target` is REQUIRED. Without it Docker builds the LAST stage in the
+    # Dockerfile, which is `ml` — so every trading container silently
+    # shipped LightGBM, pandas, scikit-learn, scipy, hmmlearn, statsmodels
+    # and arch. That is the opposite of the stated design: the ML layer is
+    # for qd-worker alone, precisely so an ML dependency cannot break
+    # execution. Measured: 745 MB built as `ml`.
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: base
+    container_name: qd-engine
+    command: ["python", "-m", "ct.engine"]
+    depends_on:
+      qd-db: { condition: service_healthy }
+    environment:
+      TZ: America/Chicago
+      QD_ENV: ${QD_ENV:-prod}
+      QD_DB_DSN: postgresql://qd:${POSTGRES_PASSWORD}@qd-db:5432/quantdesk
+      # paper | live.  `live` ALSO requires a valid, unexpired row in
+      # `live_arming` written by `qd arm-live` — setting this to `live` alone
+      # does nothing. Two independent switches, on purpose.
+      QD_MODE: ${QD_MODE:-paper}
+      QD_EXCHANGE_API_KEY_FILE: /run/secrets/exchange_api_key
+      QD_EXCHANGE_API_SECRET_FILE: /run/secrets/exchange_api_secret
+      QD_TELEGRAM_BOT_TOKEN_FILE: /run/secrets/telegram_bot_token
+      QD_TELEGRAM_CHAT_ID: ${QD_TELEGRAM_CHAT_ID:-}
+      QD_DISCORD_WEBHOOK_URL: ${QD_DISCORD_WEBHOOK_URL:-}
+    secrets: [exchange_api_key, exchange_api_secret, telegram_bot_token]
+    volumes:
+      - ./config:/app/config:ro
+      - ./logs:/app/logs
+      - ./state:/app/state          # kill-switch file lives here
+    mem_limit: 512m
+    cpus: 1.0
+    stop_grace_period: 30s          # SIGTERM → cancel open orders → persist
+    healthcheck:
+      test: ["CMD", "python", "-m", "ct.engine", "--healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Dashboard + JSON API. Read-mostly: its only writes are `control_commands`
+  # intent rows. Has NO exchange credentials — a web compromise cannot trade.
+  # ─────────────────────────────────────────────────────────────────────────
+  qd-web:
+    <<: *common
+    # `target` is REQUIRED. Without it Docker builds the LAST stage in the
+    # Dockerfile, which is `ml` — so every trading container silently
+    # shipped LightGBM, pandas, scikit-learn, scipy, hmmlearn, statsmodels
+    # and arch. That is the opposite of the stated design: the ML layer is
+    # for qd-worker alone, precisely so an ML dependency cannot break
+    # execution. Measured: 745 MB built as `ml`.
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: base
+    container_name: qd-web
+    command: ["uvicorn", "ct.web.app:app", "--host", "0.0.0.0", "--port", "8090",
+              "--workers", "1", "--proxy-headers"]
+    depends_on:
+      qd-db: { condition: service_healthy }
+    environment:
+      TZ: America/Chicago
+      QD_ENV: ${QD_ENV:-prod}
+      QD_DB_DSN: postgresql://qd:${POSTGRES_PASSWORD}@qd-db:5432/quantdesk
+      QD_SESSION_SECRET_FILE: /run/secrets/session_secret
+      # `:-` and not `:?`. Compose interpolates the whole file on every
+      # command, so a required-but-unset variable here refused to start
+      # ANYTHING — including `docker compose up -d qd-db`, which needs no
+      # admin password at all. Verified against the real binary 2026-07-28.
+      #
+      # Dropping the guard costs nothing, because `qd-web` already enforces it
+      # better: with no hash configured `known_users()` is empty, every login
+      # is refused 401 with no cookie, and the sign-in page says which variable
+      # to set. It fails closed *and* explains itself, which the compose error
+      # could not do from inside a container that never started.
+      # PREFER THE _FILE FORM. An argon2 hash always contains `$$`, and Compose
+      # interpolates `$$` in .env values, so putting the hash there silently
+      # delivered `=19=65536,t=3,p=4+2DEg` instead of the hash and every login
+      # returned 401 with correct credentials. Verified against the real stack.
+      # If you insist on the variable, double every `$$` in .env.
+      QD_ADMIN_PASSWORD_HASH_FILE: /run/secrets/admin_password_hash
+      QD_ADMIN_PASSWORD_HASH: ${QD_ADMIN_PASSWORD_HASH:-}
+    secrets: [session_secret, admin_password_hash]
+    ports:
+      # Bound to all interfaces so Tailscale can reach it; the NAS itself is
+      # not port-forwarded. Change to 127.0.0.1:8090 if you front it with Caddy.
+      - "8090:8090"
+    volumes:
+      - ./config:/app/config:ro
+      # Host health for the System page — read from the MIRROR that qd-backup
+      # maintains in ./state/hosthealth, not from the agent platform's
+      # directory: UGOS ACLs deny uid 10001 the direct read no matter what
+      # the mode bits say (2026-07-30; POSIX setfacl grants not honoured).
+      # History: the path was `agent-platform` and is actually `claude-agent`
+      # (S3-1) — Docker silently creates a missing bind source, so the wrong
+      # path failed as an empty directory, not an error.
+      - ./state/hosthealth:/hosthealth:ro
+    mem_limit: 320m
+    cpus: 0.5
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8090/healthz',timeout=5).status==200 else 1)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Nightly pg_dump + weekly restore drill. Same image as qd-db so the dump
+  # tools exactly match the server version. The drill restores into a scratch
+  # cluster inside THIS container — never into qd-db, whose 1G mem_limit is
+  # budgeted for trading. A failed or stale backup turns this container
+  # unhealthy, which the Mission Control NOC page surfaces.
+  # Idle cost is one sleeping shell; the 256M limit is for dump/drill spikes.
+  # ─────────────────────────────────────────────────────────────────────────
+  qd-backup:
+    image: timescale/timescaledb:2.17.2-pg16
+    container_name: qd-backup
+    restart: unless-stopped
+    networks: [qd]
+    entrypoint: ["/bin/sh", "/backup-loop.sh"]
+    # Explicit, because the image's default CMD (`postgres`) would otherwise be
+    # appended to the entrypoint as $1 and hit the script's usage error.
+    command: ["loop"]
+    environment:
+      TZ: America/Chicago
+      PGHOST: qd-db
+      PGUSER: qd
+      PGDATABASE: quantdesk
+      # Same credential the other services already carry inside QD_DB_DSN —
+      # this widens nothing.
+      PGPASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    depends_on:
+      qd-db: { condition: service_healthy }
+    volumes:
+      - ./docker/backup-loop.sh:/backup-loop.sh:ro
+      - ./backups:/backups
+      # Host-health mirror (see mirror_host_health in the script): this
+      # root container copies the agent platform's metrics.json into
+      # ./state/hosthealth every ~30 s, because UGOS ACLs deny uid 10001
+      # direct reads of the source no matter what the mode bits say.
+      - /volume1/docker/claude-agent/workspace/health:/hosthealth-src:ro
+      - ./state/hosthealth:/hosthealth-out
+    mem_limit: 256m
+    cpus: 0.25
+    healthcheck:
+      # Healthy = the latest backup attempt is <26h old AND succeeded, and the
+      # latest drill has not failed (a missing drill file — before the first
+      # drill — is fine: grep on a missing file fails, and the ! flips it).
+      test: ["CMD-SHELL", "find /backups/latest.json -mmin -1560 2>/dev/null | grep -q . && grep -q '\"ok\": true' /backups/latest.json && ! grep -q '\"ok\": false' /backups/drill-latest.json 2>/dev/null"]
+      interval: 5m
+      timeout: 10s
+      retries: 2
+      start_period: 10m
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Batch compute. NOT started by default (`profiles`), because 1G + 1.5 CPU
+  # is more than the NAS can spare while Minecraft runs.
+  #   docker compose --profile batch run --rm qd-worker qd backtest --all
+  # ─────────────────────────────────────────────────────────────────────────
+  qd-worker:
+    <<: *common
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: ml
+    container_name: qd-worker
+    profiles: [batch]
+    command: ["qd", "--help"]
+    depends_on:
+      qd-db: { condition: service_healthy }
+    volumes:
+      - ./config:/app/config:ro
+      - ./logs:/app/logs
+      - ./reports:/app/reports
+      - ./models:/app/models
+    mem_limit: 1024m
+    cpus: 1.5
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Optional LAN TLS. Default access path is Tailscale, which needs none.
+  # ─────────────────────────────────────────────────────────────────────────
+  qd-proxy:
+    image: caddy:2.8-alpine
+    container_name: qd-proxy
+    profiles: [tls]
+    restart: unless-stopped
+    networks: [qd]
+    ports: ["8443:8443"]
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./data/caddy:/data
+    mem_limit: 64m
+
+networks:
+  qd:
+    driver: bridge
+
+secrets:
+  exchange_api_key:    { file: ./secrets/exchange_api_key }
+  exchange_api_secret: { file: ./secrets/exchange_api_secret }
+  telegram_bot_token:  { file: ./secrets/telegram_bot_token }
+  session_secret:      { file: ./secrets/session_secret }
+  # `qd hash-password` writes this. Never the plaintext.
+  admin_password_hash: { file: ./secrets/admin_password_hash }

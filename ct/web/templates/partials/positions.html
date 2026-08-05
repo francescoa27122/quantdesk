@@ -1,0 +1,29 @@
+{% import "macros.html" as m %}
+{% if positions %}
+<table class="tbl tbl--hover">
+  <thead><tr>
+    <th>Book</th><th class="r">Qty</th><th class="r">Avg entry</th>
+    <th class="r">Stop</th><th class="r">Realised</th><th></th>
+  </tr></thead>
+  <tbody>
+  {% for p in positions %}
+    <tr>
+      <td>
+        <span class="book">{{ p.symbol }}</span>
+        <span class="book-strat">{{ p.strategy }}</span>
+      </td>
+      <td class="r num tone-{{ p.qty|tone }}">{{ p.qty|qty }}</td>
+      <td class="r num">{{ p.avg_entry|money }}</td>
+      <td class="r num">{% if p.stop_price %}{{ p.stop_price|money }}{% if p.trail_atr_mult %}<i class="dim" title="Trailing at {{ p.trail_atr_mult }}× ATR">trail</i>{% endif %}{% else %}<span class="dim">none</span>{% endif %}</td>
+      <td class="r num tone-{{ p.realized_pnl|tone }}">{{ p.realized_pnl|signed }}</td>
+      <td class="r dim" title="target {{ p.target_price|money if p.target_price else 'none' }}">{{ m.when(p.updated_at) }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+<p class="tbl-note">Unrealised P&amp;L is not shown: the engine records marks, not
+per-book unrealised — computing it here would be a second implementation that
+can disagree with the one that matters.</p>
+{% else %}
+  {{ m.empty('Flat', 'No open books. Positions appear the moment a fill is recorded.') }}
+{% endif %}
