@@ -27,11 +27,47 @@ jobs:
         with:
           persist-credentials: false
 
+      # The version comes from docker/Dockerfile, not a literal here.
+      #
+      # It used to be a hardcoded '3.12' while the Dockerfile was its own source
+      # of truth, so the two could drift silently — and immediately did. The
+      # first Dependabot PR bumped the image to python:3.14-slim and CI went
+      # green, because the `test` job had run the 682 tests on 3.12 while only
+      # the `build` job saw 3.14. A passing tick meant "the image builds", not
+      # "the code works on the new interpreter" — on the container that places
+      # orders. Deriving it means a base-image bump is actually tested.
+      - name: Resolve the Python version from the Dockerfile
+        id: pyver
+        run: |
+          v="$(grep -oP 'FROM python:\K[0-9]+\.[0-9]+' docker/Dockerfile | head -1)"
+          # An empty value would be handed to setup-python, which then picks
+          # something of its own choosing — reintroducing the drift silently.
+          if [ -z "$v" ]; then
+            echo "::error::could not read a Python version from docker/Dockerfile."
+            echo "::error::Expected a line like 'FROM python:3.12-slim AS base'."
+            exit 1
+          fi
+          echo "resolved Python $v from docker/Dockerfile"
+          echo "v=$v" >> "$GITHUB_OUTPUT"
+
       - name: Set up Python
         uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
         with:
-          python-version: '3.12'
+          python-version: ${{ steps.pyver.outputs.v }}
           cache: pip
+
+      # Belt and braces: prove the interpreter actually running the suite is the
+      # one the image ships. A mismatch here means the resolution above silently
+      # did not take effect.
+      - name: Confirm the interpreter matches the image
+        run: |
+          have="$(python -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+          want="${{ steps.pyver.outputs.v }}"
+          echo "running on $have, image ships $want"
+          [ "$have" = "$want" ] || {
+            echo "::error::tests would run on $have but the image ships $want"
+            exit 1
+          }
 
       - name: Install
         run: |
