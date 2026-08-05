@@ -218,7 +218,7 @@ Deploy target: `/volume1/docker/quantdesk` on the NAS.
    `qd-web`):
 
    ```bash
-   /volume1/docker/quantdesk/reset-password.sh
+   ./reset-password.sh
    ```
 
    By hand instead:

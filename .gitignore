@@ -15,3 +15,21 @@ demo_tmp.py
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+
+# ── local-only, deliberately never published ─────────────────────────────
+# These live in the working tree because they are useful to the operator, and
+# are ignored because they carry internal detail or depend on infrastructure
+# nobody else has. Not an oversight — each was reviewed:
+#
+#   WORKLOG.md        session-by-session development narrative. Names people,
+#                     quotes them, and records real host details on 29 lines.
+#   PHASE2-AUDIT.md   internal audit notes against an earlier phase.
+#   setup-telegram.sh copies a bot token out of a container called `node-1`,
+#                     which is a different project on the same NAS. It would
+#                     mean nothing on anyone else's machine.
+#
+# reset-password.sh is deliberately NOT here: the README tells you to run it,
+# so it ships, parameterised rather than hardcoded to one deploy path.
+WORKLOG.md
+PHASE2-AUDIT.md
+setup-telegram.sh
