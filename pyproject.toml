@@ -138,40 +138,42 @@ strict = true
 module = ["ccxt.*", "hmmlearn.*", "lightgbm.*", "arch.*", "apscheduler.*", "asyncpg.*"]
 ignore_missing_imports = true
 
-# ── the ratchet ──────────────────────────────────────────────────────────
-# Modules written before mypy was ever run against this project. Started at 31
-# modules / 159 findings; **27 modules and 60 findings have since been cleared**
-# and the four below are what is left.
+# ── the ratchet: FULLY PAID OFF, 2026-08-04 ──────────────────────────────
+# There is deliberately no `ignore_errors` block below this comment, and adding
+# one back is a regression rather than a workaround. `strict = true` above now
+# applies to every module in `ct` with no exemptions at all.
 #
-# Three findings were genuine and are fixed rather than listed here:
+# It began as 31 modules and 159 findings — everything written before mypy was
+# first run here — and went to zero in two passes. Kept as a record of what the
+# work actually was, because "annotate it" undersells it: five findings were
+# genuine defects hiding behind an `Any`, not missing paperwork.
+#
+# The genuine ones:
 #   * `strategy_class()` returned a bare `type`, so every `.name` on its result
 #     was unchecked. It returns `type[Strategy]` now.
 #   * `ImportStats.summary()` dereferenced two fields having narrowed only one.
 #   * `EventBus.subscribe` built its subscriber name from a 3-argument
 #     `getattr`, which is `Any`. That name is a dict key and reached
 #     `SubscriberStats`, `_Subscription` and the stats map untyped — four
-#     findings from one expression, now coerced with `str()`.
+#     findings from one expression.
+#   * `qd backtest` bound its portfolio result to the same local as the
+#     single-symbol result, so six PortfolioResult-only attributes read as
+#     missing. Disjoint branches, one name.
+#   * `FeatureSet._memo` and `_cut` returned `Any`, erasing the type of all 36
+#     feature accessors between them. Both are generic now — that pair alone
+#     was 36 of the last 37 findings.
 #
-# What clearing the other 27 actually took, for whoever does these four:
-#   * asyncpg ships no py.typed. That is a third-party stub problem, not our
-#     types — it moved to the `ignore_missing_imports` block above and took
-#     four modules' only findings with it.
-#   * `cast(...)` at a boundary where an untyped library hands back Any and the
-#     schema (or the library's documented contract) says what it really is.
-#   * `int(...)` / `float(...)` / `bool(...)` where the value came out of
-#     `params: dict[str, Any]` or numpy. Coercing at the boundary is better
-#     than casting the type away: a strategy warmup is a bar count, and a
-#     float there would fail far from its cause.
-#
-# Shrink this list. Each removal is a small, self-contained change.
-# 99 findings remain, and they are concentrated: features (37), loop (26),
-# cli (18), indicators (18). These four are the hard ones — unlike the cleared
-# modules they need real signatures rather than boundary coercions.
-[[tool.mypy.overrides]]
-module = [
-  "ct.cli",
-  "ct.engine.loop",
-  "ct.strategies.features",
-  "ct.strategies.indicators",
-]
-ignore_errors = true
+# The techniques, in rough order of how often they applied:
+#   * asyncpg ships no py.typed. A third-party stub problem, not our types —
+#     it belongs in `ignore_missing_imports` above, and moving it there cleared
+#     four modules outright.
+#   * Generic helpers instead of `Any` passthroughs (`_memo[T]`, `_cut[T]`).
+#     One signature can erase a whole module's types.
+#   * `cast(...)` where an untyped library returns Any and the schema or the
+#     library's documented contract says what it really is.
+#   * `int()`/`float()`/`bool()` coercion where a value came from
+#     `params: dict[str, Any]` or numpy. Coercion, not cast: a strategy warmup
+#     is a bar count, and a float there fails far from its cause.
+#   * `X | None` on attributes wired after `__init__`, plus one `assert` where
+#     the wiring guarantees it. On risk-reducing paths (flatten) that assert is
+#     deliberate — a missing executor must raise, never be silently skipped.

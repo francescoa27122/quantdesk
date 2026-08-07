@@ -45,7 +45,8 @@ mistake to fail in.
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Callable
+from typing import Any, cast
 
 import numpy as np
 from numpy.typing import NDArray
@@ -94,11 +95,20 @@ class FeatureSet:
 
     # ── memoisation ──────────────────────────────────────────────────────
 
-    def _memo(self, key: tuple[Any, ...], compute) -> Any:
+    def _memo[T](self, key: tuple[Any, ...], compute: Callable[[], T]) -> T:
+        """Generic in the computed type, which is what makes every accessor
+        below type-check. While this returned a bare `Any` the cache silently
+        erased the type of all nineteen of them — one signature accounted for
+        half this module's type findings.
+
+        The cast is the real assertion: `_cache` is heterogeneous by design
+        (arrays, tuples of arrays, boolean masks), so the key is what ties a
+        slot to its type. Never reuse a key for a different computation.
+        """
         cached = self._cache.get(key)
         if cached is not None:
             self.hits += 1
-            return cached
+            return cast("T", cached)
         self.misses += 1
         value = compute()
         self._cache[key] = value
@@ -200,15 +210,20 @@ class FeatureSet:
         return FeatureView(self, index)
 
 
-def _cut(value: Any, index: int) -> Any:
+def _cut[T](value: T, index: int) -> T:
     """Truncate an array, or each array of a tuple, at `index` inclusive.
 
     A view, not a copy: O(1) and no allocation, which is the whole point.
+
+    Generic because truncation preserves the shape it was given: an array in,
+    an array out; a 3-tuple of arrays in, a 3-tuple out. Returning `Any`
+    erased that for every `FeatureView` accessor.
     """
     stop = index + 1
+    sliceable: Any = value
     if isinstance(value, tuple):
-        return tuple(v[:stop] for v in value)
-    return value[:stop]
+        return cast("T", tuple(v[:stop] for v in value))
+    return cast("T", sliceable[:stop])
 
 
 class FeatureView:

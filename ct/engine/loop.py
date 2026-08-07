@@ -40,9 +40,10 @@ import asyncio
 import contextlib
 import itertools
 import logging
-from datetime import datetime, timezone
+from collections.abc import Awaitable, Callable
+from datetime import date, datetime, timezone
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ct.data.integrity import timeframe_seconds
 from ct.engine.control import ControlPlane, KillSwitch, RuntimeState
@@ -61,6 +62,7 @@ from ct.events import (
 from ct.events.types import Event, EventType, Severity
 from ct.execution.broker import Broker
 from ct.models import (
+    AccountState,
     Bar,
     ExitReason,
     Order,
@@ -74,6 +76,22 @@ from ct.risk.account import AccountStateBuilder
 from ct.risk.engine import RiskEngine, RiskLimits
 from ct.strategies.base import Context, Strategy
 from ct.strategies.lifecycle import Actor as _ActorEnum
+
+if TYPE_CHECKING:
+    # These are imported lazily at their use sites to keep the module's import
+    # graph acyclic; the annotations need them at check time only, and
+    # `from __future__ import annotations` keeps them as strings at runtime.
+    from ct.data.repository import CandleRepository
+    from ct.store import (
+        ArmingRepository,
+        Database,
+        NotificationOutbox,
+        OrderRepository,
+        PositionRepository,
+        ReconciliationService,
+        StrategyRepository,
+    )
+    from ct.strategies.features import FeatureSet
 
 log = logging.getLogger(__name__)
 
@@ -104,7 +122,7 @@ class TradingEngine:
         allocations: list[Allocation],
         broker: Broker,
         *,
-        db=None,
+        db: Database | None = None,
         account_id: int = 1,
         limits: RiskLimits | None = None,
         bus: EventBus | None = None,
@@ -114,7 +132,7 @@ class TradingEngine:
         correlation_clusters: dict[str, list[str]] | None = None,
         cycle_seconds: float = 20.0,
         history_bars: int = 400,
-        clock=None,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.allocations = allocations
         self.broker = broker
@@ -139,22 +157,22 @@ class TradingEngine:
 
         # Wired in `boot()` when a database is present. The engine runs without
         # one for tests, but then nothing survives a restart.
-        self.candles = None
-        self.orders = None
-        self.positions_repo = None
+        self.candles: CandleRepository | None = None
+        self.orders: OrderRepository | None = None
+        self.positions_repo: PositionRepository | None = None
         self.executor: OrderExecutor | None = None
         self.control: ControlPlane | None = None
-        self.arming = None
-        self.outbox = None
-        self.reconciler = None
-        self.strategies_repo = None
+        self.arming: ArmingRepository | None = None
+        self.outbox: NotificationOutbox | None = None
+        self.reconciler: ReconciliationService | None = None
+        self.strategies_repo: StrategyRepository | None = None
         # Durable lifecycle state, loaded on boot. Empty means "no database",
         # in which case the in-memory set is all there is — honest, but it does
         # not survive a restart.
-        self.lifecycles: dict = {}
+        self.lifecycles: dict[str, Any] = {}
 
         self._last_bar: dict[tuple[str, str], datetime] = {}
-        self._features: dict[tuple, object] = {}
+        self._features: dict[tuple[Any, ...], FeatureSet] = {}
         # Realized annualised vol per symbol, refreshed on every new closed
         # bar. Mirrors BacktestEngine._realized_ann_vol exactly — same window,
         # same EWMA, same annualisation — so live sizing and backtested sizing
@@ -164,7 +182,7 @@ class TradingEngine:
         self.vol_lookback = 30
         # UTC date of the last promotion evaluation, so housekeeping runs it
         # once per day rather than every 20 seconds.
-        self._last_promotion_eval = None
+        self._last_promotion_eval: date | None = None
         self._correlations: dict[str, str] = {}
         self._legs: dict[str, str] = {}
         # Which names are paused BECAUSE of lifecycle state, as opposed to a
@@ -217,6 +235,13 @@ class TradingEngine:
 
         if self.db is not None:
             await self._wire_repositories()
+            # `_wire_repositories` sets all of these unconditionally; the
+            # assert states that coupling rather than leaving each use site to
+            # trip over `None`. It fails loudly here — on the boot path, before
+            # anything can trade — instead of as an AttributeError mid-cycle.
+            assert self.positions_repo is not None
+            assert self.executor is not None
+            assert self.reconciler is not None
             books = await self.positions_repo.load(self.account_id)
             self.acct.positions.update(books)
             log.info("loaded %d position books", len(books))
@@ -259,15 +284,19 @@ class TradingEngine:
             PositionRepository,
             ReconciliationService,
         )
-        self.candles = CandleRepository(self.db)
-        self.orders = OrderRepository(self.db)
-        self.positions_repo = PositionRepository(self.db)
-        self.control = ControlPlane(self.db, self.account_id)
-        self.arming = ArmingRepository(self.db)
-        self.outbox = NotificationOutbox(self.db)
-        self.reconciler = ReconciliationService(self.db)
+        # Bound once: every caller reaches this behind `if self.db is not None`,
+        # and repeating that check eight times would say less than one assert.
+        db = self.db
+        assert db is not None, "_wire_repositories called without a database"
+        self.candles = CandleRepository(db)
+        self.orders = OrderRepository(db)
+        self.positions_repo = PositionRepository(db)
+        self.control = ControlPlane(db, self.account_id)
+        self.arming = ArmingRepository(db)
+        self.outbox = NotificationOutbox(db)
+        self.reconciler = ReconciliationService(db)
         from ct.store import StrategyRepository
-        self.strategies_repo = StrategyRepository(self.db)
+        self.strategies_repo = StrategyRepository(db)
         self.executor = OrderExecutor(self.broker, self.orders,
                                       self.positions_repo, self.bus,
                                       account_id=self.account_id)
@@ -373,7 +402,8 @@ class TradingEngine:
             self._scheduler = None
             log.info("scheduler stopped")
 
-    async def _step(self, name: str, coro, default=None):
+    async def _step(self, name: str, coro: Awaitable[Any],
+                    default: Any = None) -> Any:
         """Run one cycle step; a failure degrades the cycle instead of ending it.
 
         **Found by chaos testing, and it mattered.** The cycle used to be a
@@ -460,8 +490,9 @@ class TradingEngine:
         await self._step("housekeeping", self._housekeeping(now))
         self._cycle_end()
 
-    async def _record_equity(self, now: datetime, snap) -> None:
+    async def _record_equity(self, now: datetime, snap: AccountState) -> None:
         from ct.store import EquityRepository
+        assert self.db is not None      # gated on `self.candles is not None`
         await EquityRepository(self.db).record(
             self.account_id, now, equity=self.acct.equity, cash=self.acct.cash,
             positions_value=self.acct.equity - self.acct.cash,
@@ -542,7 +573,9 @@ class TradingEngine:
                     marks[symbol] = Decimal(str(bars[-1].close))
         return marks, ages, fresh
 
-    async def _run_strategies(self, fresh, marks, ages, now) -> None:
+    async def _run_strategies(self, fresh: dict[tuple[str, str], list[Bar]],
+                              marks: dict[str, Decimal], ages: dict[str, int],
+                              now: datetime) -> None:
         for alloc in self.allocations:
             strat = alloc.strategy
             if strat.name in self.state.paused_strategies:
@@ -601,7 +634,8 @@ class TradingEngine:
             position=book, regime=Regime.UNKNOWN, params=strat.params,
             f=cached.view(i))
 
-    async def _consider(self, sig: Signal, alloc: Allocation, marks, ages,
+    async def _consider(self, sig: Signal, alloc: Allocation,
+                        marks: dict[str, Decimal], ages: dict[str, int],
                         now: datetime) -> None:
         self.signals_seen += 1
         book_key = f"{sig.strategy}|{sig.symbol}"
@@ -744,6 +778,11 @@ class TradingEngine:
             log.error("flatten requested but no executor is wired; "
                       "cannot submit closing orders")
             return
+        # Bound once, outside the loop. Flatten is a risk-reducing path: if the
+        # executor is missing that is a wiring bug and must raise, never be
+        # quietly skipped, so this asserts rather than returning early.
+        executor = self.executor
+        assert executor is not None, "flatten requires a wired executor"
         for key, book in targets.items():
             if key in self._flatten_submitted:
                 continue                             # close already in flight
@@ -756,7 +795,7 @@ class TradingEngine:
             cor = self._legs.get(key) or new_correlation_id()
             self._correlations[order.client_order_id] = cor
             log.warning("flatten: closing %s (qty %s) at market", key, book.qty)
-            await self.executor.submit(order, correlation_id=cor)
+            await executor.submit(order, correlation_id=cor)
             self._flatten_submitted.add(key)
 
     async def _load_lifecycles(self) -> None:
@@ -832,7 +871,7 @@ class TradingEngine:
 
     async def _risk_event(self, code: str, detail: str, *,
                           severity: str = "critical", publish: bool = True,
-                          **payload) -> None:
+                          **payload: Any) -> None:
         """Publish AND persist. Both, always, and in that order.
 
         The event log is the observability spine, but it is not queryable the
@@ -860,7 +899,7 @@ class TradingEngine:
             # Never let bookkeeping take down the loop that enforces stops.
             log.exception("could not persist risk event %s", code)
 
-    async def _enforce_drawdown(self, snapshot) -> None:
+    async def _enforce_drawdown(self, snapshot: AccountState) -> None:
         dd = snapshot.drawdown()
         if dd >= Decimal(str(self.limits.max_total_drawdown)) and not self.state.halted:
             self.state.halt(f"total drawdown {dd:.2%}")
@@ -896,10 +935,14 @@ class TradingEngine:
                 # itself: the engine stays the single writer of its own tables.
                 from ct.store import RiskEventRepository
                 try:
-                    eid = int(cmd.args.get("id"))
+                    raw_id = cmd.args.get("id")
+                    if raw_id is None:
+                        raise TypeError("no id supplied")
+                    eid = int(raw_id)
                 except (TypeError, ValueError):
                     result = f"refused: bad event id {cmd.args.get('id')!r}"
                 else:
+                    assert self.db is not None
                     await RiskEventRepository(self.db).resolve(eid)
                     result = f"resolved risk_event {eid}"
             elif cmd.command == "reload_config":
@@ -910,6 +953,9 @@ class TradingEngine:
             log.info("control: %s by %s -> %s", cmd.command, cmd.requested_by, result)
 
     async def _reload_limits(self) -> None:
+        # Only reachable from `_apply_control`, which runs behind a wired
+        # control plane — and a control plane implies a database.
+        assert self.db is not None
         row = await self.db.fetchrow(
             """SELECT limits FROM risk_config WHERE account_id=$1
                ORDER BY effective_from DESC LIMIT 1""", self.account_id)

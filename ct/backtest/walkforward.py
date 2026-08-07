@@ -20,7 +20,7 @@ from __future__ import annotations
 import itertools
 import math
 import random
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -87,7 +87,7 @@ def purged_walk_forward_splits(
 
 # ── parameter search ─────────────────────────────────────────────────────
 
-def param_grid(space: dict[str, Sequence[Any]]) -> list[dict[str, Any]]:
+def param_grid(space: Mapping[str, Sequence[Any]]) -> list[dict[str, Any]]:
     keys = list(space)
     return [dict(zip(keys, combo)) for combo in itertools.product(*(space[k] for k in keys))]
 
@@ -125,7 +125,10 @@ class WalkForwardResult:
 def walk_forward(
     strategy_cls: type[Strategy],
     bars: list[Bar],
-    space: dict[str, Sequence[Any]],
+    # Mapping, not dict: dict is invariant in its value type, so a caller's
+    # dict[str, list[Any]] — which is what `parse_space` builds — is not a
+    # dict[str, Sequence[Any]]. Both this and `param_grid` only read it.
+    space: Mapping[str, Sequence[Any]],
     *,
     limits: RiskLimits | None = None,
     costs: CostModel | None = None,

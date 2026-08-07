@@ -45,7 +45,7 @@ import json
 import logging
 import os
 import sys
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -53,6 +53,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from ct.backtest.metrics import PerformanceReport
+    from ct.models import Bar
+    from ct.store import Database
     from ct.strategies.base import Strategy
 
 log = logging.getLogger("ct.cli")
@@ -188,7 +191,7 @@ def strategy_class(name: str) -> type[Strategy]:
 
 
 @asynccontextmanager
-async def database(*, max_size: int = 2):
+async def database(*, max_size: int = 2) -> AsyncIterator[Database]:
     from ct.store import Database
 
     dsn = os.environ.get("QD_DB_DSN")
@@ -209,7 +212,7 @@ async def database(*, max_size: int = 2):
 
 
 def bars_from_path(path: str | Path, symbols: Sequence[str], timeframe: str,
-                   ) -> dict[str, list]:
+                   ) -> dict[str, list[Bar]]:
     """Read Kraken OHLCVT CSVs — a file, a directory or a zip — into bars.
 
     The no-database path. `--csv` on a research command means the whole run is
@@ -220,7 +223,7 @@ def bars_from_path(path: str | Path, symbols: Sequence[str], timeframe: str,
 
     p = Path(path)
     wanted = set(symbols)
-    out: dict[str, list] = {s: [] for s in symbols}
+    out: dict[str, list[Bar]] = {s: [] for s in symbols}
 
     if p.is_file() and p.suffix.lower() == ".csv":
         symbol, tf = parse_filename(p.name)
@@ -246,12 +249,12 @@ def bars_from_path(path: str | Path, symbols: Sequence[str], timeframe: str,
 
 async def bars_from_db(symbols: Sequence[str], timeframe: str, *,
                        since: datetime | None, until: datetime | None,
-                       exchange: str) -> dict[str, list]:
+                       exchange: str) -> dict[str, list[Bar]]:
     from ct.data.repository import CandleRepository
 
     async with database() as db:
         repo = CandleRepository(db, exchange=exchange)
-        out: dict[str, list] = {}
+        out: dict[str, list[Bar]] = {}
         for symbol in symbols:
             bars = await repo.load(symbol, timeframe, since=since, until=until)
             if not bars:
@@ -265,7 +268,7 @@ async def bars_from_db(symbols: Sequence[str], timeframe: str, *,
         return out
 
 
-def load_bars(args: argparse.Namespace, symbols: Sequence[str]) -> dict[str, list]:
+def load_bars(args: argparse.Namespace, symbols: Sequence[str]) -> dict[str, list[Bar]]:
     if args.csv:
         return bars_from_path(args.csv, symbols, args.timeframe)
     return asyncio.run(bars_from_db(
@@ -291,7 +294,8 @@ def warmup_note(name: str, warmup: int, have: int) -> str:
 # ── research commands ────────────────────────────────────────────────────
 
 
-def report_lines(name: str, report, extra: Sequence[str] = ()) -> str:
+def report_lines(name: str, report: PerformanceReport,
+                 extra: Sequence[str] = ()) -> str:
     r = report
     lines = [
         f"{name}",
@@ -312,7 +316,7 @@ def report_lines(name: str, report, extra: Sequence[str] = ()) -> str:
 
 
 def _record_run(args: argparse.Namespace, *, strategy: str,
-                symbols: list[str], bars_by_symbol: dict[str, list],
+                symbols: list[str], bars_by_symbol: dict[str, list[Bar]],
                 params: dict[str, Any], metrics: dict[str, Any],
                 cost_model: Any, equity_curve: list[float] | None,
                 n_trials: int = 1, kind: str = "single") -> str:
@@ -327,8 +331,13 @@ def _record_run(args: argparse.Namespace, *, strategy: str,
     from ct.store.backtests import BacktestRepository, data_hash, downsample
     from ct.store.strategies import params_hash
 
+    # `is_dataclass` narrows to "instance OR class"; asdict only accepts an
+    # instance. Excluding the type keeps the narrowing honest rather than
+    # casting it away.
     costs = (dataclasses.asdict(cost_model)
-             if dataclasses.is_dataclass(cost_model) else dict(vars(cost_model)))
+             if dataclasses.is_dataclass(cost_model)
+             and not isinstance(cost_model, type)
+             else dict(vars(cost_model)))
 
     from ct.config import strategy_config
 
@@ -428,23 +437,27 @@ def cmd_backtest(args: argparse.Namespace) -> int:
 
     allocations = [Allocation(s, tuple(symbols), weight=1.0 / len(strategies))
                    for s in strategies]
-    result = PortfolioBacktestEngine(
+    # Distinct name from the single-symbol `result` above: the two branches are
+    # disjoint (that one returns), but they hold different result types, and
+    # reusing the name made mypy read every PortfolioResult-only attribute
+    # below as missing from BacktestResult — six findings from one binding.
+    pf = PortfolioBacktestEngine(
         allocations, initial_equity=args.equity, timeframe=args.timeframe,
     ).run(bars)
     payload = {"kind": "portfolio", "strategies": names, "symbols": symbols,
-               "timeframe": args.timeframe, "rejections": result.rejections,
-               "peak_committed_exposure": result.peak_committed_exposure,
-               "peak_open_books": result.peak_open_books,
-               "metrics": result.report.to_dict(),
+               "timeframe": args.timeframe, "rejections": pf.rejections,
+               "peak_committed_exposure": pf.peak_committed_exposure,
+               "peak_open_books": pf.peak_open_books,
+               "metrics": pf.report.to_dict(),
                "per_strategy": {k: v.to_dict()
-                                for k, v in result.per_strategy.items()}}
+                                for k, v in pf.per_strategy.items()}}
     text = report_lines(
         f"portfolio: {len(strategies)} strategies x {len(symbols)} symbols "
-        f"{args.timeframe}", result.report,
-        [f"  peak committed   : {result.peak_committed_exposure:.1%} "
-         f"(books {result.peak_open_books})",
-         f"  rejections       : {result.rejection_summary()}"],
-    ) + "\n\n" + result.attribution()
+        f"{args.timeframe}", pf.report,
+        [f"  peak committed   : {pf.peak_committed_exposure:.1%} "
+         f"(books {pf.peak_open_books})",
+         f"  rejections       : {pf.rejection_summary()}"],
+    ) + "\n\n" + pf.attribution()
     emit(payload, text, args.json)
     return EXIT_OK
 
@@ -1032,7 +1045,8 @@ def read_typed_confirmation(prompt: str) -> str:
     return input(prompt)
 
 
-async def _arm_live(args: argparse.Namespace, ask=read_typed_confirmation) -> int:
+async def _arm_live(args: argparse.Namespace,
+                    ask: Callable[[str], str] = read_typed_confirmation) -> int:
     from ct.store import ArmingRepository, NotificationOutbox, envelope_hash
 
     symbols = split_list(args.symbol)

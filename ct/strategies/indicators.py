@@ -16,18 +16,23 @@ image to a compiler toolchain for a dozen functions of ten lines each.
 from __future__ import annotations
 
 import numpy as np
-from numpy.typing import NDArray
+from numpy.typing import ArrayLike, NDArray
 
 Arr = NDArray[np.float64]
 
+# ArrayLike, not Arr, on the way in: every one of these funnels its series
+# through `_as_array`, so a list or a tuple is as valid as an ndarray and the
+# signature should say so. Arr stays the return type — what comes back is
+# always a float64 array.
 
-def _as_array(x) -> Arr:
+
+def _as_array(x: ArrayLike) -> Arr:
     return np.asarray(x, dtype=np.float64)
 
 
 # ── Moving averages ──────────────────────────────────────────────────────
 
-def sma(values, period: int) -> Arr:
+def sma(values: ArrayLike, period: int) -> Arr:
     v = _as_array(values)
     out = np.full(v.shape, np.nan)
     if period <= 0 or len(v) < period:
@@ -37,7 +42,7 @@ def sma(values, period: int) -> Arr:
     return out
 
 
-def ema(values, period: int) -> Arr:
+def ema(values: ArrayLike, period: int) -> Arr:
     """Wilder-free EMA, alpha = 2/(n+1), seeded with the first SMA.
 
     Seeding with the SMA rather than the first observation matters: seeding
@@ -55,7 +60,7 @@ def ema(values, period: int) -> Arr:
     return out
 
 
-def rma(values, period: int) -> Arr:
+def rma(values: ArrayLike, period: int) -> Arr:
     """Wilder's smoothing (alpha = 1/n). Used by RSI, ATR, ADX."""
     v = _as_array(values)
     out = np.full(v.shape, np.nan)
@@ -69,7 +74,7 @@ def rma(values, period: int) -> Arr:
 
 # ── Volatility ───────────────────────────────────────────────────────────
 
-def true_range(high, low, close) -> Arr:
+def true_range(high: ArrayLike, low: ArrayLike, close: ArrayLike) -> Arr:
     h, l, c = _as_array(high), _as_array(low), _as_array(close)
     tr = np.empty(len(c))
     tr[0] = h[0] - l[0]
@@ -78,11 +83,11 @@ def true_range(high, low, close) -> Arr:
     return tr
 
 
-def atr(high, low, close, period: int = 14) -> Arr:
+def atr(high: ArrayLike, low: ArrayLike, close: ArrayLike, period: int = 14) -> Arr:
     return rma(true_range(high, low, close), period)
 
 
-def rolling_std(values, period: int) -> Arr:
+def rolling_std(values: ArrayLike, period: int) -> Arr:
     v = _as_array(values)
     out = np.full(v.shape, np.nan)
     if len(v) < period or period < 2:
@@ -94,7 +99,7 @@ def rolling_std(values, period: int) -> Arr:
 
 # ── Trend / momentum ─────────────────────────────────────────────────────
 
-def macd(close, fast: int = 12, slow: int = 26, signal: int = 9
+def macd(close: ArrayLike, fast: int = 12, slow: int = 26, signal: int = 9
          ) -> tuple[Arr, Arr, Arr]:
     line = ema(close, fast) - ema(close, slow)
     sig = ema(np.nan_to_num(line, nan=0.0), signal)
@@ -102,7 +107,7 @@ def macd(close, fast: int = 12, slow: int = 26, signal: int = 9
     return line, sig, line - sig
 
 
-def rsi(close, period: int = 14) -> Arr:
+def rsi(close: ArrayLike, period: int = 14) -> Arr:
     c = _as_array(close)
     out = np.full(c.shape, np.nan)
     if len(c) <= period:
@@ -117,7 +122,7 @@ def rsi(close, period: int = 14) -> Arr:
     return out
 
 
-def adx(high, low, close, period: int = 14) -> Arr:
+def adx(high: ArrayLike, low: ArrayLike, close: ArrayLike, period: int = 14) -> Arr:
     """Average Directional Index — trend *strength*, direction-agnostic.
 
     This is the regime filter that keeps the reversion book out of trends and
@@ -140,7 +145,7 @@ def adx(high, low, close, period: int = 14) -> Arr:
     return rma(np.nan_to_num(dx, nan=0.0), period)
 
 
-def roc(close, period: int = 12) -> Arr:
+def roc(close: ArrayLike, period: int = 12) -> Arr:
     c = _as_array(close)
     out = np.full(c.shape, np.nan)
     if len(c) <= period:
@@ -150,7 +155,8 @@ def roc(close, period: int = 12) -> Arr:
     return out
 
 
-def supertrend(high, low, close, period: int = 10, multiplier: float = 3.0
+def supertrend(high: ArrayLike, low: ArrayLike, close: ArrayLike,
+               period: int = 10, multiplier: float = 3.0,
                ) -> tuple[Arr, Arr]:
     """Return (supertrend_line, direction) where direction is +1 / -1.
 
@@ -187,21 +193,22 @@ def supertrend(high, low, close, period: int = 10, multiplier: float = 3.0
 
 # ── Bands / channels ─────────────────────────────────────────────────────
 
-def bollinger(close, period: int = 20, num_std: float = 2.0
+def bollinger(close: ArrayLike, period: int = 20, num_std: float = 2.0
               ) -> tuple[Arr, Arr, Arr]:
     mid = sma(close, period)
     sd = rolling_std(close, period)
     return mid + num_std * sd, mid, mid - num_std * sd
 
 
-def keltner(high, low, close, period: int = 20, atr_period: int = 10,
+def keltner(high: ArrayLike, low: ArrayLike, close: ArrayLike,
+            period: int = 20, atr_period: int = 10,
             multiplier: float = 1.5) -> tuple[Arr, Arr, Arr]:
     mid = ema(close, period)
     a = atr(high, low, close, atr_period)
     return mid + multiplier * a, mid, mid - multiplier * a
 
 
-def donchian(high, low, period: int = 20) -> tuple[Arr, Arr, Arr]:
+def donchian(high: ArrayLike, low: ArrayLike, period: int = 20) -> tuple[Arr, Arr, Arr]:
     """Upper/mid/lower channel EXCLUDING the current bar.
 
     Excluding the current bar is not a stylistic choice: including it means
@@ -217,14 +224,15 @@ def donchian(high, low, period: int = 20) -> tuple[Arr, Arr, Arr]:
     return up, (up + lo) / 2.0, lo
 
 
-def zscore(values, period: int = 20) -> Arr:
+def zscore(values: ArrayLike, period: int = 20) -> Arr:
     v = _as_array(values)
     mean, sd = sma(v, period), rolling_std(v, period)
     with np.errstate(divide="ignore", invalid="ignore"):
         return np.where(sd > 0, (v - mean) / sd, np.nan)
 
 
-def squeeze_on(high, low, close, bb_period: int = 20, bb_std: float = 2.0,
+def squeeze_on(high: ArrayLike, low: ArrayLike, close: ArrayLike,
+               bb_period: int = 20, bb_std: float = 2.0,
                kc_period: int = 20, kc_mult: float = 1.5) -> NDArray[np.bool_]:
     """True where the Bollinger bands sit INSIDE the Keltner channel."""
     bu, _, bl = bollinger(close, bb_period, bb_std)
@@ -232,7 +240,7 @@ def squeeze_on(high, low, close, bb_period: int = 20, bb_std: float = 2.0,
     return (bu < ku) & (bl > kl)
 
 
-def realized_vol(close, period: int = 30) -> Arr:
+def realized_vol(close: ArrayLike, period: int = 30) -> Arr:
     """Per-bar stdev of log returns. Annualise with sizing.annualize_vol."""
     c = _as_array(close)
     out = np.full(c.shape, np.nan)
