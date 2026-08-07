@@ -1,9 +1,63 @@
 # QuantDesk
 
-Self-hosted algorithmic crypto trading platform for the UGreen DXP2800.
+**A complete algorithmic crypto trading stack that runs on a NAS in 2 GB of RAM.**
+Backtester, walk-forward evaluator, risk engine, live trading loop, web dashboard
+and a two-key arming ceremony — five containers, one `docker compose up`.
 
-**Design decisions and rationale: [ARCHITECTURE.md](ARCHITECTURE.md). Read it first.**
-This file is the deployment and maintenance guide.
+Built for a UGreen DXP2800 (Intel N100, 4 cores), which is the interesting
+constraint: everything here is shaped by "must run all day on a box that also
+serves files". It will run on anything that runs Docker.
+
+```bash
+git clone https://github.com/francescoa27122/quantdesk && cd quantdesk
+cp .env.example .env                      # set POSTGRES_PASSWORD, leave QD_MODE=paper
+docker compose up -d qd-db                # schema applies itself on first boot
+docker compose up -d qd-collector qd-engine qd-web
+```
+
+Dashboard on `:8090`. That is a paper-trading stack collecting live Kraken data.
+It cannot place a real order — not because you haven't configured one, but
+because no live broker exists in this build and the engine refuses to start
+pretending otherwise. Full walkthrough in [Deploy](#deploy).
+
+**Want to try it with no database and no Docker at all?** Point a backtest at a
+Kraken CSV:
+
+```bash
+pip install -e . && qd backtest --strategy ema_cross --symbol BTC/USD --csv ./XBTUSD_240.csv
+```
+
+## What makes it worth reading
+
+- **A backtester that refuses to lie to you.** Two tests are load-bearing:
+  appending future data must not change history, and a strategy's view
+  physically ends at the current bar. If either fails, every performance number
+  in the project is void — and the README says so rather than burying it.
+- **Fee-aware from the ground up.** Kraken spot is 0.80% round-trip at the $0
+  tier. A signal whose expected edge is under the fee is rejected with
+  `EDGE_BELOW_FEES` before it ever becomes an order. Most "profitable" retail
+  backtests die here.
+- **Deflated Sharpe and purged walk-forward**, so the honest trial count is part
+  of the result. `qd backtest` tells you what happened; `qd walkforward` is what
+  a decision is allowed to use.
+- **17 risk gates and 3-way position sizing**, shared by the backtester and the
+  live engine through one `AccountStateBuilder` — the same code prices your
+  history and your next order, so they cannot silently diverge.
+- **Two independent switches for live trading.** `QD_MODE=live` *and* an
+  unexpired `live_arming` row written only by a confirmation phrase typed at a
+  terminal. No env var, flag, stdin path or dashboard button can arm it.
+- **Backups that carry a receipt.** Nightly `pg_dump` records size, sha256 and
+  row counts; a Sunday drill restores the newest dump into a scratch cluster and
+  compares. An unverified backup is a rumour.
+- **Event-sourced.** Durable event log with replay, so "what happened at 03:14?"
+  is a query rather than an archaeology project.
+- **Strict everywhere.** `ruff`, `mypy --strict` across all 61 modules with zero
+  exemptions, and CI runs the suite on every Python version the project claims
+  to support — derived from the Dockerfile, not hardcoded.
+
+**Design decisions and rationale: [ARCHITECTURE.md](ARCHITECTURE.md). Read it
+before changing anything.** This file is the deployment and maintenance guide.
+Practical gotchas are collected in [Tips and tricks](#tips-and-tricks).
 
 ---
 
@@ -40,7 +94,7 @@ This file is the deployment and maintenance guide.
 | Strategy lifecycle FSM + allocator (`ct/strategies/lifecycle.py`, `ct/risk/allocator.py`) | ✅ built, tested |
 | Paper broker | 🟡 built, needs live quotes to exercise |
 | Persistence (`ct/store/`) — repos, outbox, reconciliation, PG event sink | ✅ built, tested against real TimescaleDB |
-| Docker stack, DB schema | ✅ written, **not yet deployed to the NAS** |
+| Docker stack, DB schema | ✅ deployed — 5 containers healthy on the NAS since 2026-07-29 |
 | Market data service (`ct/data/`) — feed, integrity, backfill, history import | ✅ built, tested, smoke-tested live |
 | Trading engine (`ct/engine/`) — loop, control plane, execution | ✅ built, tested, run end-to-end |
 | CLI (`ct/cli.py`) — every `qd …` command below | ✅ built, tested |
@@ -48,7 +102,12 @@ This file is the deployment and maintenance guide.
 | Live broker + arming ceremony | 🟡 `qd arm-live` writes the arming; **no live broker exists**, and `qd-engine` refuses to start in `QD_MODE=live` |
 | ML (regime HMM, meta-labeller) | ⛔ Phase 5 |
 
-`521 local tests + 39 database tests passing` (`pytest tests/ -q`, ~40 s on this hardware), `ruff check --select F,E9` clean.
+**682 tests passing** in ~48 s (`pytest -q`), plus 40 that skip without a real
+Postgres — see [Database tests](#database-tests). `ruff` clean and `mypy ct`
+clean with **no per-module exemptions**: the typing ratchet that once exempted
+31 modules was paid off to zero on 2026-08-04. CI runs the suite on every minor
+Python version between the `requires-python` floor and the version the
+containers ship, both read from source rather than written into the workflow.
 
 ### The `qd` commands
 
@@ -340,6 +399,92 @@ docker compose --profile batch run --rm qd-worker qd walkforward --strategy ema_
 ```bash
 docker compose --profile batch run --rm qd-worker qd promotion-status
 ```
+
+---
+
+## Tips and tricks
+
+Things that cost someone an evening. In rough order of how likely you are to
+hit them.
+
+**Put the admin password hash in a secret file, not `.env`.** An argon2id hash
+is full of `$`, `docker compose` interpolates `$` in `.env`, and **quoting does
+not stop it**. The mangled hash arrives as `=19=65536,t=3,p=4` and every login
+fails looking exactly like a wrong password. Sidestep it entirely:
+
+```bash
+docker compose run --rm qd-web qd hash-password --json | jq -r .hash > secrets/admin_password_hash
+```
+
+**Use `--csv` to evaluate a strategy with no infrastructure at all.** No
+database, no containers, no collector. This is the fastest way to decide
+whether an idea is worth deploying:
+
+```bash
+qd backtest --strategy ema_cross --symbol BTC/USD --csv ./XBTUSD_240.csv
+```
+
+**`qd backtest` is a description; `qd walkforward` is a decision.** A single
+backtest over one period will flatter almost anything. The walk-forward is
+purged, reports a deflated Sharpe, and takes the honest trial count — every
+variant you tried, not the one you kept.
+
+**Script against exit codes, not stdout.** `0` ok · `1` failure · `2` usage ·
+`3` refused by a gate. A `3` is the system working, and a wrapper that treats it
+as a crash will page you at 4 a.m. for correct behaviour.
+
+**A quiet strategy is usually right, not broken.** Ask the database before you
+debug the code:
+
+```sql
+SELECT reject_code, count(*), max(ts)
+FROM signals WHERE strategy = 'ema_cross' AND NOT accepted
+  AND ts > now() - interval '7 days'
+GROUP BY 1 ORDER BY 2 DESC;
+```
+
+`EDGE_BELOW_FEES` at the top of that list means the fee gate is doing its job.
+
+**Kill switch ≠ flatten, deliberately.** `KILL` blocks *all* orders including
+exits, because it means "I do not trust this system right now". If you want
+positions closed, that is `qd flatten`. Reaching for the wrong one under stress
+is the mistake this naming exists to prevent — and **halt works for every role,
+including `viewer`.** Stopping is never gated.
+
+**Deep history does not come from the API.** Measured 2026-07-28: Kraken
+retains ~720 intervals per timeframe, so the REST API gives you ~30 days at 1h
+and ~2 years at 1d, no matter how you page it. Anything deeper is a manual bulk
+OHLCVT download imported with `qd import-history`. If you skip this the
+collector simply accumulates forward from first run, which is a supported state.
+
+**Deliver every secret as `_FILE`.** Every `QD_*` setting accepts
+`QD_<NAME>_FILE=/run/secrets/x`. A secret passed as a plain env var is visible
+in `docker inspect`, in `/proc/<pid>/environ`, and in any crash dump that
+snapshots the environment.
+
+**Create the exchange key withdrawal-disabled and IP-allowlisted.** One setting,
+and it caps total compromise of the box at slippage rather than your balance.
+It is the highest-leverage control in the project.
+
+**Keep the dashboard on Tailscale.** Do not port-forward it. Nothing about a
+trading control plane belongs on the public internet.
+
+**Backtests are profile-gated on purpose.** `qd-worker` sits behind
+`--profile batch` so a heavy walk-forward never competes with the live engine
+for the N100's four cores. On 8 GB, stop Minecraft before a big sweep.
+
+**`scp -O` or nothing on UGOS.** Plain `scp` fails against the NAS's SFTP
+implementation. Same trap bites `rsync` over the default transport.
+
+**Recreate the test database container after touching `schema.sql`.** The suite
+isolates with TRUNCATE, not DROP SCHEMA — dropping deadlocks against
+TimescaleDB's background workers — so a changed schema does not take effect in
+a reused container.
+
+**Editing `schema.sql` after first boot is a trap.** It is the Alembic baseline
+and is applied once by Postgres via `/docker-entrypoint-initdb.d`. Every change
+after that is a migration (`qd migrate`), or a fresh install and an upgraded one
+will disagree the moment somebody forgets one of them.
 
 ---
 
