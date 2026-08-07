@@ -24,7 +24,7 @@ import logging
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import asyncpg
 
@@ -112,7 +112,7 @@ class Database:
 
     async def healthy(self) -> bool:
         try:
-            return await self.fetchval("SELECT 1") == 1
+            return bool(await self.fetchval("SELECT 1") == 1)
         except Exception:
             return False
 
@@ -125,7 +125,10 @@ class Database:
 
     async def execute(self, sql: str, *args: Any) -> str:
         try:
-            return await self._require().execute(sql, *args)
+            # asyncpg ships no stubs, so the pool is Any. These casts record
+            # the documented return types at the one boundary the rest of the
+            # codebase reads them through.
+            return cast("str", await self._require().execute(sql, *args))
         except asyncpg.IntegrityConstraintViolationError as exc:
             raise IntegrityError(str(exc)) from exc
         except asyncpg.PostgresError as exc:
@@ -134,7 +137,8 @@ class Database:
 
     async def fetch(self, sql: str, *args: Any) -> list[asyncpg.Record]:
         try:
-            return await self._require().fetch(sql, *args)
+            return cast("list[asyncpg.Record]",
+                        await self._require().fetch(sql, *args))
         except asyncpg.IntegrityConstraintViolationError as exc:
             raise IntegrityError(str(exc)) from exc
         except asyncpg.PostgresError as exc:

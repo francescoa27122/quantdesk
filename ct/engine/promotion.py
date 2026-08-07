@@ -34,6 +34,8 @@ import math
 from datetime import datetime
 from typing import Any
 
+from ct.store.db import Database
+
 log = logging.getLogger(__name__)
 
 MIN_PAPER_DAYS = 90
@@ -88,7 +90,7 @@ def max_drawdown_of(returns: list[float]) -> float:
     return worst
 
 
-async def evaluate(db, *, now: datetime) -> list[dict[str, Any]]:
+async def evaluate(db: Database, *, now: datetime) -> list[dict[str, Any]]:
     """Evaluate every strategy currently in paper or live; upsert one row each.
 
     Returns the rows written (for logging/tests)."""

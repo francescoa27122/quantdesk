@@ -22,6 +22,7 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
+from typing import Any
 
 from ct.events.log import EventLog
 from ct.events.types import Event, EventType
@@ -261,7 +262,7 @@ def execution_quality(lcs: Iterable[TradeLifecycle]) -> dict[str, float | int]:
     }
 
 
-def _events(source: EventLog | Iterable[Event], **kw) -> Iterator[Event]:
+def _events(source: EventLog | Iterable[Event], **kw: Any) -> Iterator[Event]:
     if isinstance(source, EventLog):
         return source.read(**kw)
     from ct.events.log import _filter

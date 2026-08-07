@@ -30,10 +30,11 @@ from __future__ import annotations
 import csv
 import logging
 import zipfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import IO, Any
 
 from ct.models import Bar
 
@@ -121,7 +122,7 @@ def parse_filename(name: str) -> tuple[str, str]:
     return symbol, tf
 
 
-def read_csv(handle, symbol: str, timeframe: str,
+def read_csv(handle: Iterable[str], symbol: str, timeframe: str,
              stats: ImportStats | None = None) -> Iterator[Bar]:
     """Stream one Kraken OHLCVT CSV. Malformed rows are skipped and counted.
 
@@ -174,6 +175,7 @@ def iter_archive(
         # iterates it, and a `with` here would close the file before a single
         # row was read. Directory members and zip members go through this one
         # path, which is why it is a callable rather than an open file.
+        opener: Callable[[Any], IO[str]]
         opener = lambda m: open(m, encoding="utf-8", newline="")   # noqa: E731, SIM115
     elif path.suffix.lower() == ".zip":
         zf = zipfile.ZipFile(path)

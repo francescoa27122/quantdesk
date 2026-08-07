@@ -47,6 +47,7 @@ import time
 from collections import deque
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
+from typing import Any
 
 from ct.events.log import EventLog, InMemoryEventLog
 from ct.events.types import Event, EventType, Severity
@@ -304,7 +305,10 @@ class EventBus:
         quarantined permanently — degrade to no observability, never to a
         broken engine.
         """
-        sub_name = name or getattr(handler, "__name__", f"sub-{len(self._subs)}")
+        # str(): 3-argument getattr is Any, which leaked into SubscriberStats,
+        # the subscription and the stats dict key — four findings from one
+        # expression. A subscriber name is a dict key and must be a str.
+        sub_name = name or str(getattr(handler, "__name__", f"sub-{len(self._subs)}"))
         with self._subs_lock:
             stats = SubscriberStats(sub_name)
             self._subs.append(_Subscription(sub_name, handler, types, stats))
@@ -372,7 +376,7 @@ class NullEventBus(EventBus):
     through the engine, is how the backtest and live paths drift apart again.
     """
 
-    def __init__(self, **kw) -> None:
+    def __init__(self, **kw: Any) -> None:
         super().__init__(InMemoryEventLog(max_events=0), **kw)
 
     def publish(self, event: Event) -> Event:

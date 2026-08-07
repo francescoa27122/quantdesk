@@ -26,7 +26,9 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, cast
+
+from ct.store.db import Database
 
 log = logging.getLogger(__name__)
 
@@ -52,7 +54,7 @@ def _payload(raw: Any) -> dict[str, Any]:
         return raw
     if isinstance(raw, str):
         try:
-            return json.loads(raw)
+            return cast("dict[str, Any]", json.loads(raw))
         except ValueError:
             return {}
     return {}
@@ -61,7 +63,7 @@ def _payload(raw: Any) -> dict[str, Any]:
 class Queries:
     """Read-only view of the trading database."""
 
-    def __init__(self, db, account_id: int = 1) -> None:
+    def __init__(self, db: Database, account_id: int = 1) -> None:
         self.db = db
         self.account_id = account_id
 
@@ -92,7 +94,7 @@ class Queries:
                ORDER BY seq DESC LIMIT 1""")
         now = datetime.now(timezone.utc)
 
-        def _age(r) -> float | None:
+        def _age(r: Any) -> float | None:
             return None if r is None else (now - r["ts"]).total_seconds()
 
         payload = _payload(row["payload"]) if row else {}
@@ -199,7 +201,7 @@ class Queries:
 
         equity = _f(row["equity"])
 
-        def _chg(before) -> float | None:
+        def _chg(before: Any) -> float | None:
             base = _f(before, 0.0)
             return None if base <= 0 else equity / base - 1.0
 

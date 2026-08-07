@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable, Sequence
 from datetime import datetime, timedelta
+from typing import cast
 
 from ct.data.integrity import timeframe_seconds
 from ct.models import Bar
@@ -70,16 +71,19 @@ class CandleRepository:
 
     async def latest_ts(self, symbol: str, timeframe: str) -> datetime | None:
         """The cursor the collector resumes from after a restart."""
-        return await self.db.fetchval(
+        # `fetchval` is Any because asyncpg ships no stubs. `ts` is timestamptz
+        # and asyncpg decodes that to an aware datetime, so the cast states a
+        # fact about the schema rather than papering over an unknown.
+        return cast("datetime | None", await self.db.fetchval(
             """SELECT max(ts) FROM candles
                WHERE exchange=$1 AND symbol=$2 AND timeframe=$3""",
-            self.exchange, symbol, timeframe)
+            self.exchange, symbol, timeframe))
 
     async def earliest_ts(self, symbol: str, timeframe: str) -> datetime | None:
-        return await self.db.fetchval(
+        return cast("datetime | None", await self.db.fetchval(
             """SELECT min(ts) FROM candles
                WHERE exchange=$1 AND symbol=$2 AND timeframe=$3""",
-            self.exchange, symbol, timeframe)
+            self.exchange, symbol, timeframe))
 
     async def count(self, symbol: str, timeframe: str) -> int:
         return int(await self.db.fetchval(

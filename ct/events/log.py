@@ -34,7 +34,7 @@ import time
 from collections.abc import Iterator
 from datetime import date, datetime
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import IO, Any, Protocol, runtime_checkable
 
 from ct.events.types import Event, EventType
 
@@ -84,7 +84,7 @@ class InMemoryEventLog:
                 del self._events[:overflow]
                 self.dropped += overflow
 
-    def read(self, **kw) -> Iterator[Event]:
+    def read(self, **kw: Any) -> Iterator[Event]:
         with self._lock:
             snapshot = list(self._events)
         yield from _filter(snapshot, **kw)
@@ -133,7 +133,7 @@ class JsonlEventLog:
         self.flush_interval_seconds = flush_interval_seconds
 
         self._lock = threading.Lock()
-        self._handle = None
+        self._handle: IO[str] | None = None
         self._open_date: date | None = None
         self._since_flush = 0
         self._last_flush = time.monotonic()

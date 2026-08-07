@@ -22,6 +22,7 @@ import logging
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from typing import Any, cast
 
 from ct.data.integrity import timeframe_seconds
 from ct.models import Bar
@@ -73,7 +74,7 @@ class Backfiller:
         page_limit: int = 720,
         max_requests: int = 200,
         request_pause: float = 1.0,
-        clock=None,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.fetcher = fetcher
         # Injected so "is this bar closed yet?" is testable without sleeping.
@@ -213,7 +214,7 @@ class Backfiller:
         return await self.fetch_range(symbol, timeframe, since=since, until=now)
 
 
-def ccxt_fetcher(exchange) -> Fetcher:
+def ccxt_fetcher(exchange: Any) -> Fetcher:
     """Adapt a ccxt async exchange to the `Fetcher` signature.
 
     Thin on purpose: everything worth testing lives in `Backfiller`, and this
@@ -221,8 +222,11 @@ def ccxt_fetcher(exchange) -> Fetcher:
     """
     async def fetch(symbol: str, timeframe: str, since: int | None,
                     limit: int) -> Sequence[Sequence[float]]:
-        return await exchange.fetch_ohlcv(symbol, timeframe, since=since,
-                                          limit=limit)
+        # ccxt ships no type information; the cast records the documented
+        # OHLCV row shape rather than letting Any leak into the backfiller.
+        return cast("Sequence[Sequence[float]]",
+                    await exchange.fetch_ohlcv(symbol, timeframe, since=since,
+                                               limit=limit))
     return fetch
 
 

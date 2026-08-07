@@ -31,6 +31,7 @@ import json
 import logging
 from collections import deque
 from collections.abc import Iterator, Sequence
+from typing import Any
 
 from ct.events.log import EventLog, JsonlEventLog
 from ct.events.types import Event, EventType
@@ -58,7 +59,7 @@ class PostgresEventSink:
         # that is down does not preserve events, it exhausts a 7.7 GB NAS and
         # takes the engine with it. Dropping is visible; OOM is not.
         self._queue: deque[Event] = deque(maxlen=queue_size)
-        self._task: asyncio.Task | None = None
+        self._task: asyncio.Task[None] | None = None
         self._stopping = asyncio.Event()
         self.written = 0
         self.dropped = 0
@@ -72,7 +73,7 @@ class PostgresEventSink:
             self.dropped += 1
         self._queue.append(event)
 
-    def read(self, **kw) -> Iterator[Event]:
+    def read(self, **kw: Any) -> Iterator[Event]:
         """Not supported synchronously — use `fetch()`.
 
         Raising rather than returning empty is deliberate: silently returning
@@ -190,7 +191,7 @@ class TeeEventLog:
                 self.failures[i] += 1
                 log.exception("event log %d append failed", i)
 
-    def read(self, **kw) -> Iterator[Event]:
+    def read(self, **kw: Any) -> Iterator[Event]:
         """Reads come from the FIRST log that supports it — by construction the
         durable one, so a read never depends on the database being up."""
         for lg in self.logs:
@@ -243,12 +244,12 @@ async def backfill_from_jsonl(sink: PostgresEventSink, jsonl: JsonlEventLog,
     return written
 
 
-def _row(e: Event) -> tuple:
+def _row(e: Event) -> tuple[Any, ...]:
     return (e.seq, e.ts, e.type.value, e.source, e.severity.value,
             e.correlation_id, e.causation_id, json.dumps(e.payload, default=str))
 
 
-def _event(r) -> Event:
+def _event(r: Any) -> Event:
     from ct.events.types import Severity
     payload = r["payload"]
     return Event(type=EventType(r["type"]),

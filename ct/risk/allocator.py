@@ -39,7 +39,7 @@ scheduling one.
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any
@@ -184,7 +184,7 @@ class Allocator:
 
     def rank(self, candidates: Sequence[Any], *,
              weights: Weights | None = None,
-             key=None) -> list[Any]:
+             key: Callable[[Any], Any] | None = None) -> list[Any]:
         """Order competing signals best-first for one engine pass.
 
         The score is the signal's own expected edge in bps — the number the fee

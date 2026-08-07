@@ -30,6 +30,7 @@ import random
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Any, cast
 
 from ct.data.integrity import timeframe_seconds
 from ct.models import Bar
@@ -213,10 +214,14 @@ class MarketDataFeed:
         return out
 
 
-def ccxt_watcher(exchange) -> Watcher:
+def ccxt_watcher(exchange: Any) -> Watcher:
     """Adapt a `ccxt.pro` exchange. Thin by design — the logic is in the feed."""
     async def watch(symbol: str, timeframe: str) -> Sequence[Sequence[float]]:
-        return await exchange.watch_ohlcv(symbol, timeframe)
+        # ccxt ships no type information, so `watch_ohlcv` is Any. The cast
+        # records the documented return shape — a list of OHLCV rows — instead
+        # of letting Any leak into the feed, which is typed.
+        return cast("Sequence[Sequence[float]]",
+                    await exchange.watch_ohlcv(symbol, timeframe))
     return watch
 
 

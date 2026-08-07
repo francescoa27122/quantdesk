@@ -22,7 +22,7 @@ import asyncio
 import contextlib
 import logging
 import signal
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -86,7 +86,7 @@ class MarketDataCollector:
         integrity: IntegrityConfig | None = None,
         feed_config: FeedConfig | None = None,
         bus: EventBus | None = None,
-        clock=None,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.config = config or CollectorConfig()
         self.watcher = watcher
@@ -98,7 +98,7 @@ class MarketDataCollector:
         self._now = clock or (lambda: datetime.now(timezone.utc))
         self.stats = CollectorStats()
         self.feeds: list[MarketDataFeed] = []
-        self._tasks: list[asyncio.Task] = []
+        self._tasks: list[asyncio.Task[None]] = []
         self._stopping = asyncio.Event()
 
         for symbol in self.config.symbols:

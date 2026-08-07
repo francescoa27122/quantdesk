@@ -22,7 +22,9 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import Any
 
 log = logging.getLogger(__name__)
 
@@ -31,7 +33,8 @@ _API = "https://api.telegram.org/bot{token}/sendMessage"
 
 class TelegramSender:
     def __init__(self, token: str | None, chat_id: str | None, *,
-                 post=None) -> None:
+                 post: Callable[[str, dict[str, Any]], Awaitable[bool]] | None = None,
+                 ) -> None:
         self.token = (token or "").strip()
         self.chat_id = (chat_id or "").strip()
         self._post = post or self._post_aiohttp
@@ -78,7 +81,7 @@ class TelegramSender:
         return ok
 
     @staticmethod
-    async def _post_aiohttp(url: str, payload: dict) -> bool:
+    async def _post_aiohttp(url: str, payload: dict[str, Any]) -> bool:
         import aiohttp
 
         timeout = aiohttp.ClientTimeout(total=10)

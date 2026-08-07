@@ -60,8 +60,11 @@ class BollingerReversionStrategy(Strategy):
     @property
     def warmup(self) -> int:
         p = self.params
-        return max(p["regime_ema"] if p["require_above_regime"] else 0,
-                   p["period"], 2 * p["adx_period"] + 1, p["atr_period"]) + 5
+        # int(): see breakout.warmup — `params` is dict[str, Any] and a warmup
+        # is a bar count, so coerce at the boundary rather than cast.
+        return int(max(p["regime_ema"] if p["require_above_regime"] else 0,
+                       p["period"], 2 * p["adx_period"] + 1,
+                       p["atr_period"])) + 5
 
     def on_bar(self, ctx: Context) -> list[Signal]:
         p = self.params
@@ -156,7 +159,8 @@ class ZScoreReversionStrategy(Strategy):
     @property
     def warmup(self) -> int:
         p = self.params
-        return max(p["period"], 2 * p["adx_period"] + 1, p["atr_period"]) + 5
+        return int(max(p["period"], 2 * p["adx_period"] + 1,
+                       p["atr_period"])) + 5
 
     def on_bar(self, ctx: Context) -> list[Signal]:
         p = self.params

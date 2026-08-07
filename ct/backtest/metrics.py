@@ -20,6 +20,7 @@ import math
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from decimal import Decimal
+from typing import Any
 
 import numpy as np
 
@@ -99,7 +100,7 @@ class PerformanceReport:
     benchmark_sharpe: float = 0.0
     beats_benchmark: bool = False
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     def verdict(self) -> str:

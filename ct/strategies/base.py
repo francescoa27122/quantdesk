@@ -18,12 +18,18 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import numpy as np
 from numpy.typing import NDArray
 
 from ct.models import Bar, Position, Regime, Signal
+
+if TYPE_CHECKING:
+    # Import-time cycle: features imports base for Context. The runtime import
+    # stays inside `features` below; this one exists only for the annotations,
+    # which `from __future__ import annotations` keeps as strings.
+    from ct.strategies.features import FeatureView
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,10 +52,10 @@ class Context:
     params: dict[str, Any] = field(default_factory=dict)
     # Per-run indicator cache, supplied by whichever engine is driving. `None`
     # for a hand-built Context — see `features` below.
-    f: Any = None
+    f: FeatureView | None = None
 
     @property
-    def features(self):
+    def features(self) -> FeatureView:
         """Indicators for this bar, cached across bars when an engine supplies
         the cache and recomputed from scratch when it does not.
 
@@ -166,7 +172,7 @@ class Strategy(ABC):
         a0, a1, b0, b1 = series[i - 1], series[i], other[i - 1], other[i]
         if any(np.isnan(x) for x in (a0, a1, b0, b1)):
             return False
-        return a0 <= b0 and a1 > b1
+        return bool(a0 <= b0 and a1 > b1)
 
     @staticmethod
     def _crossed_down(series: NDArray[np.float64], other: NDArray[np.float64],
@@ -176,7 +182,7 @@ class Strategy(ABC):
         a0, a1, b0, b1 = series[i - 1], series[i], other[i - 1], other[i]
         if any(np.isnan(x) for x in (a0, a1, b0, b1)):
             return False
-        return a0 >= b0 and a1 < b1
+        return bool(a0 >= b0 and a1 < b1)
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}({self.params})"

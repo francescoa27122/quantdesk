@@ -54,7 +54,8 @@ def _nice_ticks(lo: float, hi: float, count: int = 4) -> list[float]:
     else:
         step = mag * 10
     start = math.ceil(lo / step) * step
-    ticks, value = [], start
+    ticks: list[float] = []
+    value = start
     while value <= hi + step * 0.001 and len(ticks) < 12:
         ticks.append(round(value, 10))
         value += step

@@ -39,6 +39,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
+from typing import Any
 
 import numpy as np
 
@@ -58,6 +59,7 @@ from ct.events import (
     signal_rejected,
 )
 from ct.models import (
+    AccountState,
     Bar,
     ClosedTrade,
     ExitReason,
@@ -345,7 +347,7 @@ class PortfolioBacktestEngine:
                 continue
 
             # ── 4. every strategy proposes on every symbol it owns ───────
-            pending_signals: list[tuple] = []
+            pending_signals: list[tuple[Any, ...]] = []
             for alloc in self.allocations:
                 strat = alloc.strategy
                 for symbol in alloc.symbols:
@@ -419,8 +421,12 @@ class PortfolioBacktestEngine:
 
     # ── helpers ──────────────────────────────────────────────────────────
 
-    def _consider(self, sig, alloc, acct, snapshot, ser, idx, legs, pending,
-                  signal_log, rejections) -> None:
+    def _consider(self, sig: Signal, alloc: Allocation,
+                  acct: AccountStateBuilder, snapshot: AccountState,
+                  ser: _SymbolSeries, idx: int, legs: dict[str, _Leg],
+                  pending: list[tuple[Order, int, str]],
+                  signal_log: list[tuple[Signal, Decision]],
+                  rejections: dict[str, int]) -> None:
         cor = (legs[f"{sig.strategy}|{sig.symbol}"].correlation_id
                if f"{sig.strategy}|{sig.symbol}" in legs else new_correlation_id())
         sig_event = self.bus.publish(signal_generated(
@@ -463,8 +469,10 @@ class PortfolioBacktestEngine:
         acct.reserve(order.client_order_id, order.strategy, order.symbol, notional)
         pending.append((order, self._order_ttl(order), cor))
 
-    def _settle(self, legs, leg_key, exit_price, realized, reason, tick, ts,
-                trades, acct) -> None:
+    def _settle(self, legs: dict[str, _Leg], leg_key: str,
+                exit_price: Decimal, realized: Decimal, reason: ExitReason,
+                tick: int, ts: datetime, trades: list[ClosedTrade],
+                acct: AccountStateBuilder) -> None:
         leg = legs.pop(leg_key, None)
         if leg is None:
             return

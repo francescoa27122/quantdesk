@@ -45,8 +45,12 @@ class DonchianTrendStrategy(Strategy):
     @property
     def warmup(self) -> int:
         p = self.params
-        return max(p["entry_period"], p["exit_period"], p["atr_period"],
-                   p["vol_period"], p["regime_ema"] if p["long_only"] else 0) + 5
+        # int(): `params` is dict[str, Any], so the max() is Any. A warmup is a
+        # bar count and is indexed with — a float here would fail far from the
+        # cause, so coerce at the boundary rather than casting the type away.
+        return int(max(p["entry_period"], p["exit_period"], p["atr_period"],
+                       p["vol_period"],
+                       p["regime_ema"] if p["long_only"] else 0)) + 5
 
     def on_bar(self, ctx: Context) -> list[Signal]:
         p = self.params
@@ -133,8 +137,8 @@ class AtrSqueezeBreakoutStrategy(Strategy):
     @property
     def warmup(self) -> int:
         p = self.params
-        return max(p["bb_period"], p["kc_period"], p["atr_period"],
-                   p["vol_period"]) + p["min_squeeze_bars"] + 5
+        return int(max(p["bb_period"], p["kc_period"], p["atr_period"],
+                       p["vol_period"]) + p["min_squeeze_bars"]) + 5
 
     def on_bar(self, ctx: Context) -> list[Signal]:
         p = self.params

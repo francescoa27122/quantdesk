@@ -44,7 +44,7 @@ class EmaCrossStrategy(Strategy):
     @property
     def warmup(self) -> int:
         p = self.params
-        return max(p["slow"], 2 * p["adx_period"] + 1, p["atr_period"]) + 5
+        return int(max(p["slow"], 2 * p["adx_period"] + 1, p["atr_period"])) + 5
 
     def on_bar(self, ctx: Context) -> list[Signal]:
         p = self.params
@@ -125,7 +125,7 @@ class SupertrendStrategy(Strategy):
     @property
     def warmup(self) -> int:
         p = self.params
-        return max(p["regime_ema"], p["st_period"], p["atr_period"]) + 5
+        return int(max(p["regime_ema"], p["st_period"], p["atr_period"])) + 5
 
     def on_bar(self, ctx: Context) -> list[Signal]:
         p = self.params
@@ -199,7 +199,8 @@ class MacdMomentumStrategy(Strategy):
     @property
     def warmup(self) -> int:
         p = self.params
-        return max(p["slow"] + p["signal"], p["roc_period"], p["atr_period"]) + 5
+        return int(max(p["slow"] + p["signal"], p["roc_period"],
+                       p["atr_period"])) + 5
 
     def on_bar(self, ctx: Context) -> list[Signal]:
         p = self.params

@@ -20,7 +20,10 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from datetime import datetime
 from typing import Any
+
+from ct.store.db import Database
 
 log = logging.getLogger(__name__)
 
@@ -53,12 +56,13 @@ def downsample(curve: list[float], limit: int = 400) -> list[float]:
 
 
 class BacktestRepository:
-    def __init__(self, db) -> None:
+    def __init__(self, db: Database) -> None:
         self.db = db
 
     async def record(
         self, *, strategy: str, symbols: list[str], timeframe: str,
-        start_ts, end_ts, params: dict[str, Any], params_hash: str,
+        start_ts: datetime, end_ts: datetime,
+        params: dict[str, Any], params_hash: str,
         data_hash: str, code_git_sha: str, cost_model: dict[str, Any],
         metrics: dict[str, Any], equity_curve: list[float] | None = None,
         n_trials: int = 1, kind: str = "single",

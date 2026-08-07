@@ -73,7 +73,11 @@ class CostModel:
         if bar_dollar_volume <= 0:
             return self.half_spread_bps + 50.0   # unknown liquidity: punish it
         participation = min(1.0, notional / bar_dollar_volume)
-        return self.half_spread_bps + self.impact_k * np.sqrt(participation) * 10_000.0
+        # float(): np.sqrt returns np.floating, so the expression is Any to
+        # mypy. The conversion is lossless and keeps numpy scalars out of the
+        # cost model, which is compared and serialised as plain floats.
+        return float(self.half_spread_bps
+                     + self.impact_k * np.sqrt(participation) * 10_000.0)
 
 
 @dataclass
@@ -326,8 +330,11 @@ class BacktestEngine:
                     code = decision.code.value if decision.code else "UNKNOWN"
                     rejections[code] = rejections.get(code, 0) + 1
                     continue
+                # Assert before binding, not after: `order` is already the
+                # Order-typed loop variable from the pending-fill pass above,
+                # so narrowing has to happen on `decision.order` itself.
+                assert decision.order is not None
                 order = decision.order
-                assert order is not None
                 if sig.direction == 0:
                     order = _with_meta(order, reason_enum=ExitReason.SIGNAL.value)
                 # Counted against the rate limiter, which the backtest used to

@@ -135,54 +135,43 @@ strict = true
 # waiver on OUR types — it stops mypy reporting "module is installed but
 # missing a py.typed marker" once per import site, which is noise that
 # hides real findings.
-module = ["ccxt.*", "hmmlearn.*", "lightgbm.*", "arch.*", "apscheduler.*"]
+module = ["ccxt.*", "hmmlearn.*", "lightgbm.*", "arch.*", "apscheduler.*", "asyncpg.*"]
 ignore_missing_imports = true
 
 # ── the ratchet ──────────────────────────────────────────────────────────
-# Modules written before mypy was ever run against this project. 159 findings,
-# of which ~124 are missing annotations, `Any` returns and bare generics; most
-# of the rest are Optional-narrowing in code whose runtime guards mypy cannot
-# see (e.g. `self.candles = None` in __init__, assigned a real repository in
-# `_wire_repositories`, and only ever read behind `if self.candles is not None`).
+# Modules written before mypy was ever run against this project. Started at 31
+# modules / 159 findings; **27 modules and 60 findings have since been cleared**
+# and the four below are what is left.
 #
-# Two findings were genuine and are fixed rather than listed here:
+# Three findings were genuine and are fixed rather than listed here:
 #   * `strategy_class()` returned a bare `type`, so every `.name` on its result
 #     was unchecked. It returns `type[Strategy]` now.
 #   * `ImportStats.summary()` dereferenced two fields having narrowed only one.
+#   * `EventBus.subscribe` built its subscriber name from a 3-argument
+#     `getattr`, which is `Any`. That name is a dict key and reached
+#     `SubscriberStats`, `_Subscription` and the stats map untyped — four
+#     findings from one expression, now coerced with `str()`.
+#
+# What clearing the other 27 actually took, for whoever does these four:
+#   * asyncpg ships no py.typed. That is a third-party stub problem, not our
+#     types — it moved to the `ignore_missing_imports` block above and took
+#     four modules' only findings with it.
+#   * `cast(...)` at a boundary where an untyped library hands back Any and the
+#     schema (or the library's documented contract) says what it really is.
+#   * `int(...)` / `float(...)` / `bool(...)` where the value came out of
+#     `params: dict[str, Any]` or numpy. Coercing at the boundary is better
+#     than casting the type away: a strategy warmup is a bar count, and a
+#     float there would fail far from its cause.
 #
 # Shrink this list. Each removal is a small, self-contained change.
+# 99 findings remain, and they are concentrated: features (37), loop (26),
+# cli (18), indicators (18). These four are the hard ones — unlike the cleared
+# modules they need real signatures rather than boundary coercions.
 [[tool.mypy.overrides]]
 module = [
-  "ct.backtest.engine",
-  "ct.backtest.metrics",
-  "ct.backtest.portfolio",
   "ct.cli",
-  "ct.data.backfill",
-  "ct.data.collector",
-  "ct.data.feed",
-  "ct.data.history",
-  "ct.data.repository",
   "ct.engine.loop",
-  "ct.engine.promotion",
-  "ct.events.bus",
-  "ct.events.log",
-  "ct.events.replay",
-  "ct.notify",
-  "ct.risk.allocator",
-  "ct.store.arming",
-  "ct.store.backtests",
-  "ct.store.db",
-  "ct.store.events",
-  "ct.store.outbox",
-  "ct.store.repositories",
-  "ct.strategies.base",
-  "ct.strategies.breakout",
   "ct.strategies.features",
   "ct.strategies.indicators",
-  "ct.strategies.reversion",
-  "ct.strategies.trend",
-  "ct.web.app",
-  "ct.web.charts",
-  "ct.web.queries",
 ]
 ignore_errors = true
