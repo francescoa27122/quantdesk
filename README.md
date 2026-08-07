@@ -40,7 +40,7 @@ pip install -e . && qd backtest --strategy ema_cross --symbol BTC/USD --csv ./XB
 - **Deflated Sharpe and purged walk-forward**, so the honest trial count is part
   of the result. `qd backtest` tells you what happened; `qd walkforward` is what
   a decision is allowed to use.
-- **17 risk gates and 3-way position sizing**, shared by the backtester and the
+- **16 risk gates and 3-way position sizing**, shared by the backtester and the
   live engine through one `AccountStateBuilder` — the same code prices your
   history and your next order, so they cannot silently diverge.
 - **Two independent switches for live trading.** `QD_MODE=live` *and* an
@@ -54,6 +54,50 @@ pip install -e . && qd backtest --strategy ema_cross --symbol BTC/USD --csv ./XB
 - **Strict everywhere.** `ruff`, `mypy --strict` across all 61 modules with zero
   exemptions, and CI runs the suite on every Python version the project claims
   to support — derived from the Dockerfile, not hardcoded.
+
+## The dashboard
+
+Seven pages served by `qd-web`, read-only over Tailscale. Server-rendered
+Jinja with a little SSE — no build step, no JavaScript framework, and it loads
+on a phone over a VPN.
+
+> **The figures below are synthetic demo data**, generated to exercise the UI.
+> They are not trading results, and no strategy in this repo has earned real
+> money. That distinction is the whole point of the project, so it would be a
+> poor place to start blurring it.
+
+**Overview** — equity and drawdown, the risk budget against its caps, open
+books, and the signals risk *refused*. The refusals are given equal billing on
+purpose: without them you cannot tell a bad strategy from one that risk is
+strangling.
+
+![The Overview page](docs/screenshots/overview.png)
+
+**Risk** — the whole gate stack, in the order it executes, with each gate's
+limit next to its current value. Two rows read `not measured here` rather than
+green, because connectivity and clock skew are checked inside the engine and
+leave no row behind — so the page will not claim they are healthy.
+
+![The Risk page](docs/screenshots/risk.png)
+
+**Strategies** — signals, what risk let through, what actually filled, and the
+promotion gate. It reports `Never evaluated` rather than a comforting green
+tick, because the nightly evaluator is Phase 5 and "not measured" is not the
+same as "passed".
+
+![The Strategies page](docs/screenshots/strategies.png)
+
+**Trades** — one row per lifecycle, traced from the signal that started it to
+the P&L that ended it, including the ones that never became an order. Built on
+the event log rather than a `trades` table, because nothing writes that table,
+and a page over it would look like "no trades yet" instead of "nothing records
+this".
+
+![The Trades page](docs/screenshots/trades.png)
+
+Also: [Positions](docs/screenshots/positions.png) (per-book exposure, stops and
+targets) and [System](docs/screenshots/system.png) (data coverage, schema
+provenance, database size, heartbeats).
 
 **Design decisions and rationale: [ARCHITECTURE.md](ARCHITECTURE.md). Read it
 before changing anything.** This file is the deployment and maintenance guide.
@@ -83,7 +127,7 @@ Practical gotchas are collected in [Tips and tricks](#tips-and-tricks).
 | Component | Status |
 |---|---|
 | Domain models, position accounting | ✅ built, tested |
-| Risk engine (17 gates, 3-way sizing) | ✅ built, tested |
+| Risk engine (16 gates, 3-way sizing) | ✅ built, tested |
 | `AccountStateBuilder` (shared by backtest + live) | ✅ built, tested |
 | Event bus + durable log + replay | ✅ built, tested, wired into the portfolio engine |
 | Portfolio backtester (N symbols × M strategies) | ✅ built, tested |
