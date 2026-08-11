@@ -142,7 +142,7 @@ Practical gotchas are collected in [Tips and tricks](#tips-and-tricks).
 | Market data service (`ct/data/`) — feed, integrity, backfill, history import | ✅ built, tested, smoke-tested live |
 | Trading engine (`ct/engine/`) — loop, control plane, execution | ✅ built, tested, run end-to-end |
 | CLI (`ct/cli.py`) — every `qd …` command below | ✅ built, tested |
-| Dashboard (`ct/web/`) — 7 pages, SSE, JSON API, `/metrics` | ✅ built, tested, rendered against seeded data |
+| Dashboard (`ct/web/`) — 8 pages + trade detail, SSE, JSON API, `/metrics` | ✅ built, tested, running against live paper data |
 | Live broker + arming ceremony | 🟡 `qd arm-live` writes the arming; **no live broker exists**, and `qd-engine` refuses to start in `QD_MODE=live` |
 | ML (regime HMM, meta-labeller) | ⛔ Phase 5 |
 
@@ -406,8 +406,9 @@ Deploy target: `/volume1/docker/quantdesk` on the NAS.
 docker compose ps && docker compose logs --tail 50 qd-engine
 ```
 
-**Stop trading immediately** — three independent paths, all equivalent, use
-whichever you can reach fastest:
+**Stop trading immediately** — three independent paths that share no mechanism,
+so one being broken cannot take the others with it. Use whichever you can reach
+fastest. They are *not* equivalent, and the difference matters under stress:
 
 ```bash
 docker compose exec qd-engine touch /app/state/KILL
@@ -416,9 +417,16 @@ docker compose exec qd-engine touch /app/state/KILL
 - The dashboard's red **HALT** button (available to every role, including `viewer`).
 - Telegram `/halt` to your existing bot.
 
-The kill switch blocks *all* orders including exits, because it means "I do not
-trust this system right now." To close positions instead, use `flatten_all`,
-which is a different command on purpose.
+| Path | Effect |
+|---|---|
+| `touch /app/state/KILL`, `qd kill` | **KILL** — blocks *all* orders, exits included. Immediate: the risk gate checks the file before every order, and an unreadable file counts as engaged. |
+| Dashboard **HALT**, `qd halt`, Telegram `/halt` | **HALT** — stops *opening*; exits still work. Applied on the engine's next cycle. |
+| `qd flatten` | **FLATTEN** — reduce-only market closes next cycle, until the book is flat. |
+
+KILL means "I do not trust this system right now", which is why it stops exits
+too. To get *out* of positions, use flatten — a third thing again, on purpose.
+Stopping is never gated: every role may halt, and no drawdown state or
+disarming can prevent one from taking effect.
 
 **Resume**
 
@@ -589,7 +597,7 @@ is never gated, and disarming any link kills every renewal descended from it.
 | Cadence | Task | Command |
 |---|---|---|
 | Daily | Automatic `pg_dump -Fc` to `/volume1/docker/quantdesk/backups` | ✅ `qd-backup` sidecar, 03:30 CT; on-demand: `docker exec qd-backup sh /backup-loop.sh backup` |
-| Daily | Read the morning summary notification | ⛔ the outbox sender is a stub that logs |
+| Daily | Read the morning summary notification | 🟡 the sender is real (`ct/notify.py`); silent unless Telegram is configured — see below |
 | Weekly | **Verify a backup restores** into a scratch cluster | ✅ `qd-backup` drills Sundays after the dump; on-demand: `docker exec qd-backup sh /backup-loop.sh drill` |
 | Weekly | Review `risk_events` for unresolved rows | `qd status` |
 | Monthly | Re-check the exchange fee tier; update `.env` if it changed | — |
@@ -609,6 +617,35 @@ To restore for real: stop the stack, recreate `qd-db` with an empty
 `./data/pgdata`, then `CREATE EXTENSION timescaledb; SELECT
 timescaledb_pre_restore();`, `pg_restore -d quantdesk <dump>`, `SELECT
 timescaledb_post_restore();` — the same sequence the drill exercises weekly.
+
+### Notifications: real in code, silent until configured
+
+`ct/notify.py` is the outbox's real sender — the earlier stub that logged and
+claimed success is gone. It needs two settings:
+
+- `QD_TELEGRAM_BOT_TOKEN_FILE` — path to a file holding the bot token
+- `QD_TELEGRAM_CHAT_ID` — the destination chat
+
+With either missing, `TelegramSender` logs the message and reports success on
+purpose, so the outbox drains rather than growing a retry backlog it can never
+clear. That degradation is deliberate (see the module docstring), and the cost
+is that *every* loud notification — halts, quarantines, drawdown breaches,
+arming changes — ends up only in `docker compose logs qd-engine`.
+
+`qd status` reports which of the two states you are in, under
+`telegram_configured`; it asks `TelegramSender` rather than assuming, so it
+cannot drift from the sender it describes. After configuring, confirm with:
+
+```bash
+docker logs qd-engine | grep "telegram notifications are LIVE"
+```
+
+That line is logged lazily, on the first notification after a restart — its
+absence right after recreating the container means "nothing sent yet", not
+"broken".
+
+**Stopping the engine from your phone does not depend on any of this.** That
+path is inbound and works regardless — see *Stop trading immediately* above.
 
 ### Log locations
 
