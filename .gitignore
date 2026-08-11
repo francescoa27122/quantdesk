@@ -33,3 +33,6 @@ demo_tmp.py
 WORKLOG.md
 PHASE2-AUDIT.md
 setup-telegram.sh
+
+# macOS
+.DS_Store

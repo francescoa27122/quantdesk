@@ -777,6 +777,18 @@ def cmd_import_history(args: argparse.Namespace) -> int:
 # ── operations ───────────────────────────────────────────────────────────
 
 
+def _telegram_configured() -> bool:
+    """Whether notifications can actually leave the box.
+
+    Deliberately reuses `TelegramSender`'s own definition rather than
+    re-deriving it: two places deciding what "configured" means is how a status
+    command starts disagreeing with the thing it reports on.
+    """
+    from ct.notify import TelegramSender
+
+    return TelegramSender.from_env().configured
+
+
 async def _status(args: argparse.Namespace) -> int:
     from ct.store import PositionRepository
 
@@ -810,6 +822,7 @@ async def _status(args: argparse.Namespace) -> int:
         "pending_commands": [dict(r) for r in pending_cmds],
         "unresolved_risk_events": [dict(r) for r in risk],
         "notifications_pending": int(outbox or 0),
+        "telegram_configured": _telegram_configured(),
     }
     lines = [f"account {args.account}   QD_MODE={payload['mode']}"]
     if equity:
@@ -834,9 +847,15 @@ async def _status(args: argparse.Namespace) -> int:
     for r in risk[:5]:
         lines.append(f"    [{r['severity']}] {r['code']}: {r['detail']}")
     lines.append(f"  notifications pending: {int(outbox or 0)}")
-    if int(outbox or 0):
-        lines.append("    NOTE: the engine's sender is a stub that logs and "
-                     "reports success — nothing reaches Telegram yet.")
+    # This used to hardcode "the sender is a stub" — true when written, false
+    # from 2026-07-30, and printed on every `qd status` in between. A status
+    # command that asserts a fact it never checks will always drift; ask
+    # `TelegramSender` what it actually has instead.
+    if not payload["telegram_configured"]:
+        lines.append("    NOTE: Telegram is not configured "
+                     "(QD_TELEGRAM_BOT_TOKEN_FILE / QD_TELEGRAM_CHAT_ID), so "
+                     "notifications are written to the engine log and dropped. "
+                     "Wire it with setup-telegram.sh.")
     emit(payload, "\n".join(lines), args.json)
     return EXIT_OK
 
