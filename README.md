@@ -40,7 +40,7 @@ pip install -e . && qd backtest --strategy ema_cross --symbol BTC/USD --csv ./XB
 - **Deflated Sharpe and purged walk-forward**, so the honest trial count is part
   of the result. `qd backtest` tells you what happened; `qd walkforward` is what
   a decision is allowed to use.
-- **16 risk gates and 3-way position sizing**, shared by the backtester and the
+- **27 rejection codes and 3-way position sizing**, shared by the backtester and the
   live engine through one `AccountStateBuilder` — the same code prices your
   history and your next order, so they cannot silently diverge.
 - **Two independent switches for live trading.** `QD_MODE=live` *and* an
